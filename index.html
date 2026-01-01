@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Pit Roguelike</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background: #05060b;
+        }
+        #root {
+            width: 100%;
+            height: 100%;
+        }
+        #error {
+            color: #ff5d5d;
+            padding: 20px;
+            font-family: monospace;
+            display: none;
+            background: rgba(0,0,0,0.9);
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            border: 2px solid #ff5d5d;
+            border-radius: 8px;
+            max-width: 600px;
+            z-index: 1000;
+        }
+        #error code {
+            background: rgba(255,255,255,0.1);
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        #loading {
+            color: #2ea8ff;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Loading game...</div>
+    <div id="root"></div>
+    <div id="error"></div>
+    
+    <!-- React and ReactDOM from CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- Babel Standalone for JSX transformation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <script>
+        console.log('Starting game load...');
+        console.log('React available:', typeof React !== 'undefined');
+        console.log('ReactDOM available:', typeof ReactDOM !== 'undefined');
+        console.log('Babel available:', typeof Babel !== 'undefined');
+        
+        // Show error helper
+        function showError(msg) {
+            document.getElementById('loading').style.display = 'none';
+            const errorDiv = document.getElementById('error');
+            errorDiv.style.display = 'block';
+            errorDiv.innerHTML = '<h2>⚠️ Error Loading Game</h2><p>' + msg + '</p><p style="margin-top: 15px; color: #e6e8ff;">Make sure you are running from a local server (not file://)</p><p style="margin-top: 10px;">Try running: <code>python -m http.server 8000</code></p><p style="margin-top: 10px; font-size: 12px; color: #999;">Check browser console (F12) for more details</p>';
+        }
+        
+        // Check if React loaded
+        if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
+            showError('React failed to load. Check your internet connection.');
+            throw new Error('React not loaded');
+        }
+        
+        // Load and execute the component
+        const componentPath = './import React, { useEffect, useMemo, useR.js';
+        console.log('Loading component from:', componentPath);
+        
+        fetch(componentPath)
+            .then(response => {
+                console.log('Response status:', response.status);
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status + ': Could not load component file');
+                }
+                return response.text();
+            })
+            .then(code => {
+                console.log('Component code loaded, length:', code.length);
+                try {
+                    // Replace import statement with global React references
+                    // Handle: import React, { useEffect, useMemo, useRef, useState } from "react";
+                    let modifiedCode = code.replace(
+                        /import\s+React\s*,\s*\{([^}]+)\}\s+from\s+["']react["'];?/g,
+                        (match, imports) => {
+                            // Create destructuring from global React (React is already loaded globally)
+                            return `const { ${imports.trim()} } = React;`;
+                        }
+                    );
+                    
+                    // Also handle if React is imported alone: import React from "react";
+                    modifiedCode = modifiedCode.replace(
+                        /import\s+React\s+from\s+["']react["'];?/g,
+                        '// React is already available globally'
+                    );
+                    
+                    // Replace export default with window assignment
+                    modifiedCode = modifiedCode.replace(
+                        /export default function NeonPitRoguelikeV3\(\)/g,
+                        'function NeonPitRoguelikeV3()'
+                    );
+                    
+                    console.log('Transforming code with Babel...');
+                    // Transform with Babel
+                    const transformed = Babel.transform(modifiedCode, {
+                        presets: ['react']
+                    }).code;
+                    
+                    console.log('Code transformed, executing...');
+                    // Execute the code
+                    eval(transformed);
+                    
+                    // Assign to window for global access
+                    if (typeof NeonPitRoguelikeV3 !== 'undefined') {
+                        window.NeonPitRoguelikeV3 = NeonPitRoguelikeV3;
+                        console.log('Component function found!');
+                    } else {
+                        console.error('Component function not found after eval');
+                    }
+                    
+                    // Render
+                    setTimeout(() => {
+                        if (typeof window.NeonPitRoguelikeV3 === 'function') {
+                            console.log('Rendering component...');
+                            document.getElementById('loading').style.display = 'none';
+                            const root = ReactDOM.createRoot(document.getElementById('root'));
+                            root.render(React.createElement(window.NeonPitRoguelikeV3));
+                            console.log('Component rendered!');
+                        } else {
+                            showError('Component function not found after loading. Check console for errors.');
+                        }
+                    }, 50);
+                } catch (error) {
+                    console.error('Error processing component:', error);
+                    showError('Error processing component: ' + error.message);
+                }
+            })
+            .catch(error => {
+                console.error('Fetch error:', error);
+                showError('Failed to load component file: ' + error.message);
+            });
+    </script>
+</body>
+</html>
