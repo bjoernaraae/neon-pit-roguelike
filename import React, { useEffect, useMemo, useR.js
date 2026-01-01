@@ -99,149 +99,103 @@ function resolveDynamicCircleOverlap(a, b, bounds) {
 }
 
 function generateProceduralLevel(w, h, floor) {
-  const rooms = [];
+  // Simple square map - start basic
+  // Make the level larger than screen
+  const scaleFactor = 2.5 + (floor - 1) * 0.2; // 2.5x for floor 1, scales up
+  const levelW = w * scaleFactor;
+  const levelH = h * scaleFactor;
+  const padding = 40;
+  
+  // Determine biome based on floor
+  const biomeTypes = ["grassland", "desert", "winter", "forest", "volcanic"];
+  const biome = biomeTypes[(floor - 1) % biomeTypes.length];
+  
+  // Simple square walkable area (entire map minus padding)
+  const walkableArea = {
+    x: padding,
+    y: padding,
+    w: levelW - padding * 2,
+    h: levelH - padding * 2,
+  };
+  
+  // Create single walkable area for the entire map
+  const walkableAreas = [walkableArea];
+  
+  // Simple room structure (just the main area)
+  const rooms = [{
+    x: padding,
+    y: padding,
+    w: levelW - padding * 2,
+    h: levelH - padding * 2,
+    id: 0,
+    enemies: [],
+    cleared: false
+  }];
+  
+  // Empty arrays for now (can add later)
   const corridors = [];
   const obstacles = [];
   const grass = [];
   const water = [];
   const rocks = [];
   
-  // Determine biome based on floor (cycles through biomes)
-  const biomeTypes = ["grassland", "desert", "winter", "forest", "volcanic"];
-  const biome = biomeTypes[(floor - 1) % biomeTypes.length];
+  return { 
+    rooms, 
+    corridors, 
+    obstacles, 
+    grass, 
+    water, 
+    rocks, 
+    biome, 
+    w: levelW, 
+    h: levelH, 
+    walkableAreas 
+  };
+}
+
+// Check if a point is in a walkable area
+function isPointWalkable(x, y, levelData, playerRadius = 12) {
+  if (!levelData || !levelData.walkableAreas) return true;
   
-  // Make the level larger than the screen - 2-3x size
-  const levelW = w * 2.5;
-  const levelH = h * 2.5;
+  // Check if point is inside any walkable area (with padding for player radius)
+  for (const area of levelData.walkableAreas) {
+    if (x >= area.x + playerRadius && 
+        x <= area.x + area.w - playerRadius &&
+        y >= area.y + playerRadius && 
+        y <= area.y + area.h - playerRadius) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Find nearest walkable position
+function findNearestWalkable(x, y, levelData, playerRadius = 12) {
+  if (!levelData || !levelData.walkableAreas) return { x, y };
   
-  // Generate 6-9 rooms per floor for larger map
-  const roomCount = 6 + Math.floor(Math.random() * 4);
-  const minRoomSize = 140;
-  const maxRoomSize = 260;
-  const padding = 50;
+  if (isPointWalkable(x, y, levelData, playerRadius)) {
+    return { x, y };
+  }
   
-  // Create rooms with spacing
-  for (let i = 0; i < roomCount; i++) {
-    let attempts = 0;
-    let room = null;
+  // Find closest walkable point
+  let closestX = x;
+  let closestY = y;
+  let minDist = Infinity;
+  
+  for (const area of levelData.walkableAreas) {
+    // Clamp to area bounds
+    const clampedX = clamp(x, area.x + playerRadius, area.x + area.w - playerRadius);
+    const clampedY = clamp(y, area.y + playerRadius, area.y + area.h - playerRadius);
+    const dist = Math.hypot(x - clampedX, y - clampedY);
     
-    while (attempts < 50 && !room) {
-      const roomW = rand(minRoomSize, maxRoomSize);
-      const roomH = rand(minRoomSize, maxRoomSize);
-      const x = rand(padding, levelW - roomW - padding);
-      const y = rand(padding, levelH - roomH - padding);
-      
-      // Check overlap with existing rooms
-      let overlaps = false;
-      for (const existing of rooms) {
-        const dx = Math.abs(x + roomW/2 - (existing.x + existing.w/2));
-        const dy = Math.abs(y + roomH/2 - (existing.y + existing.h/2));
-        if (dx < (roomW + existing.w)/2 + 30 && dy < (roomH + existing.h)/2 + 30) {
-          overlaps = true;
-          break;
-        }
-      }
-      
-      if (!overlaps) {
-        room = { x, y, w: roomW, h: roomH, id: i, enemies: [], cleared: false };
-        rooms.push(room);
-      }
-      attempts++;
+    if (dist < minDist) {
+      minDist = dist;
+      closestX = clampedX;
+      closestY = clampedY;
     }
   }
   
-  // Connect rooms with corridors
-  for (let i = 1; i < rooms.length; i++) {
-    const prev = rooms[i - 1];
-    const curr = rooms[i];
-    
-    const prevCenterX = prev.x + prev.w / 2;
-    const prevCenterY = prev.y + prev.h / 2;
-    const currCenterX = curr.x + curr.w / 2;
-    const currCenterY = curr.y + curr.h / 2;
-    
-    // Create L-shaped corridor
-    const midX = (prevCenterX + currCenterX) / 2;
-    const midY = (prevCenterY + currCenterY) / 2;
-    
-    corridors.push({
-      x: Math.min(prevCenterX, midX) - 15,
-      y: prevCenterY - 15,
-      w: Math.abs(midX - prevCenterX) + 30,
-      h: 30,
-    });
-    
-    corridors.push({
-      x: midX - 15,
-      y: Math.min(prevCenterY, currCenterY) - 15,
-      w: 30,
-      h: Math.abs(currCenterY - prevCenterY) + 30,
-    });
-  }
-  
-  // Add some obstacles in rooms
-  for (const room of rooms) {
-    const obstacleCount = Math.floor(rand(2, 5));
-    for (let i = 0; i < obstacleCount; i++) {
-      obstacles.push({
-        x: room.x + rand(20, room.w - 20),
-        y: room.y + rand(20, room.h - 20),
-        r: rand(8, 16),
-      });
-    }
-  }
-  
-  // Add rocks scattered across the level (more variety)
-  const rockCount = Math.floor(rand(25, 40));
-  for (let i = 0; i < rockCount; i++) {
-    rocks.push({
-      x: rand(padding, levelW - padding),
-      y: rand(padding, levelH - padding),
-      r: rand(6, 14),
-      type: Math.random() < 0.7 ? "small" : "large", // 70% small, 30% large
-    });
-  }
-  
-  // Add biome-specific decorations
-  if (biome === "grassland" || biome === "forest") {
-    // Grass patches in rooms and corridors
-    for (const room of rooms) {
-      const grassCount = Math.floor(rand(8, 15));
-      for (let i = 0; i < grassCount; i++) {
-        grass.push({
-          x: room.x + rand(10, room.w - 10),
-          y: room.y + rand(10, room.h - 10),
-          size: rand(4, 8),
-        });
-      }
-    }
-    for (const corr of corridors) {
-      const grassCount = Math.floor(rand(3, 6));
-      for (let i = 0; i < grassCount; i++) {
-        grass.push({
-          x: corr.x + rand(5, corr.w - 5),
-          y: corr.y + rand(5, corr.h - 5),
-          size: rand(3, 6),
-        });
-      }
-    }
-  }
-  
-  // Add water pools (only in grassland/forest biomes)
-  if (biome === "grassland" || biome === "forest") {
-    const waterCount = Math.floor(rand(2, 4));
-    for (let i = 0; i < waterCount; i++) {
-      const waterSize = rand(40, 80);
-      water.push({
-        x: rand(padding, levelW - padding - waterSize),
-        y: rand(padding, levelH - padding - waterSize),
-        w: waterSize,
-        h: waterSize,
-      });
-    }
-  }
-  
-  return { rooms, corridors, obstacles, grass, water, rocks, biome, w: levelW, h: levelH };
+  return { x: closestX, y: closestY };
 }
 
 const RARITY = {
@@ -635,6 +589,10 @@ export default function NeonPitRoguelikeV3() {
     deathReason: "",
     showStats: false,
     selectedChar: "cowboy",
+    pauseMenu: false, // Pause menu state
+    showAdmin: false, // Admin section state
+    bossTpX: null, // Boss teleporter X position
+    bossTpY: null, // Boss teleporter Y position
   });
 
   const uiRef = useRef(ui);
@@ -881,7 +839,7 @@ export default function NeonPitRoguelikeV3() {
         name: "Bone",
         type: TYPE.WEAPON,
         base: {
-          attackCooldown: 0.62,
+          attackCooldown: 0.95, // Slower attack speed for level 1
           weaponDamage: 8,
           projectiles: 1,
           pierce: 0,
@@ -909,15 +867,16 @@ export default function NeonPitRoguelikeV3() {
         name: "Poison Flask",
         type: TYPE.WEAPON,
         base: {
-          attackCooldown: 1.1, // Slower attack speed
+          attackCooldown: 2.2, // Very slow attack speed - thrown flask
           weaponDamage: 10,
           projectiles: 1,
           pierce: 0,
-          spread: 0.06,
+          spread: 0.02,
           bounces: 0,
           effect: "poison",
-          mode: "splash", // Splash damage mode
+          mode: "thrown", // Thrown flask that lands and splashes
           weaponSplashR: 65, // Splash radius
+          bulletSpeedMult: 0.65, // Slower throw speed
         },
         levelBonuses: [
           (p) => (p.weaponDamage *= 1.14),
@@ -1058,7 +1017,7 @@ export default function NeonPitRoguelikeV3() {
         base: {
           attackCooldown: 0.72,
           weaponDamage: 7,
-          projectiles: 5,
+          projectiles: 3,
           pierce: 0,
           spread: 0.18,
           bounces: 0,
@@ -1084,14 +1043,14 @@ export default function NeonPitRoguelikeV3() {
         name: "Flamewalker",
         type: TYPE.WEAPON,
         base: {
-          attackCooldown: 0.15,
+          attackCooldown: 0.85, // Slower attack speed - spawns fire periodically
           weaponDamage: 6,
           projectiles: 0,
           pierce: 0,
           spread: 0,
           bounces: 0,
           effect: "burn",
-          mode: "melee",
+          mode: "aura", // New mode for ground fire
           meleeR: 50,
         },
         levelBonuses: [
@@ -1114,7 +1073,7 @@ export default function NeonPitRoguelikeV3() {
           bounces: 0, // No bounce, it returns instead
           effect: null,
           mode: "boomerang", // Special boomerang mode
-          bulletSpeedMult: 1.1,
+          bulletSpeedMult: 0.65, // Slower speed for visibility
         },
         levelBonuses: [
           (p) => (p.weaponDamage *= 1.13),
@@ -1161,7 +1120,12 @@ export default function NeonPitRoguelikeV3() {
         desc: "+Attack speed",
         apply: (p, r) => {
           const m = rarityMult(r);
-          p.attackCooldown = Math.max(0.18, p.attackCooldown * (1 - 0.04 * m)); // Reduced from 0.08
+          // Reduce cooldown on all weapons (lower cooldown = faster attacks)
+          if (p.weapons && p.weapons.length > 0) {
+            for (const weapon of p.weapons) {
+              weapon.attackCooldown = Math.max(0.18, weapon.attackCooldown * (1 - 0.04 * m));
+            }
+          }
         },
         icon: makeIconDraw("time"),
       },
@@ -1260,30 +1224,19 @@ export default function NeonPitRoguelikeV3() {
         id: "t_bounce",
         name: "Bounce Tome",
         type: TYPE.TOME,
-        desc: "+Bounces",
+        desc: "+1 Bounce to all weapons",
         apply: (p, r) => {
           const m = rarityMult(r);
-          // Add bounces to all weapons that have bounce capability
+          // Always add bounces to all weapons (guaranteed, scales with rarity)
+          // Common: +1, Uncommon: +1, Rare: +2, Legendary: +2
+          const bounceAdd = m < 1.5 ? 1 : 2;
           if (p.weapons && p.weapons.length > 0) {
             for (const weapon of p.weapons) {
               if (weapon.bounces !== undefined && weapon.bounces >= 0) {
-                if (Math.random() < 0.55 + 0.2 * m) {
-                  weapon.bounces = clamp(weapon.bounces + 1, 0, 8);
-                }
+                weapon.bounces = clamp(weapon.bounces + bounceAdd, 0, 8);
               }
             }
           }
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_poison",
-        name: "Poison Tome",
-        type: TYPE.TOME,
-        desc: "+Poison chance",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.poisonChance = clamp(p.poisonChance + 0.06 * m, 0, 0.85);
         },
         icon: makeIconDraw("time"),
       },
@@ -1294,7 +1247,7 @@ export default function NeonPitRoguelikeV3() {
         desc: "+Freeze chance on hit",
         apply: (p, r) => {
           const m = rarityMult(r);
-          p.freezeChance = clamp(p.freezeChance + 0.025 * m, 0, 0.7); // Reduced from 0.05
+          p.freezeChance = clamp(p.freezeChance + 0.022 * m, 0, 0.65);
         },
         icon: makeIconDraw("time"),
       },
@@ -1354,119 +1307,6 @@ export default function NeonPitRoguelikeV3() {
         },
         icon: makeIconDraw("time"),
       },
-      {
-        id: "power_gloves",
-        name: "Power Gloves",
-        type: TYPE.ITEM,
-        desc: "+Damage",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.weaponDamage *= 1 + 0.18 * m;
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "borgar",
-        name: "Borgar",
-        type: TYPE.ITEM,
-        desc: "+Max HP",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          const p = s.player;
-          p.maxHp = Math.round(p.maxHp + 12 * m); // Reduced from 20
-          p.hp = Math.min(p.maxHp, p.hp + Math.round(8 * m)); // Reduced from 15
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "oats",
-        name: "Oats",
-        type: TYPE.ITEM,
-        desc: "+HP regen",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.regen += 0.4 * m; // Reduced from 0.8
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "golden_glove",
-        name: "Golden Glove",
-        type: TYPE.ITEM,
-        desc: "+Gold from kills",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.goldGain *= 1 + 0.08 * m; // Reduced from 0.15
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "credit_card_green",
-        name: "Credit Card (Green)",
-        type: TYPE.ITEM,
-        desc: "+Gold gain",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.goldGain *= 1 + 0.06 * m; // Reduced from 0.12
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "clover",
-        name: "Clover",
-        type: TYPE.ITEM,
-        desc: "+Luck",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.luck += 0.22 * m; // Reduced from 0.4
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "spiky_shield",
-        name: "Spiky Shield",
-        type: TYPE.ITEM,
-        desc: "Reflect damage",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.thorns = (s.player.thorns || 0) + 0.15 * m;
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "slurp_gloves",
-        name: "Slurp Gloves",
-        type: TYPE.ITEM,
-        desc: "+Lifesteal",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.lifesteal = (s.player.lifesteal || 0) + 0.08 * m;
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "mirror",
-        name: "Mirror",
-        type: TYPE.ITEM,
-        desc: "Brief invincibility on hit",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.iFrameOnHit = (s.player.iFrameOnHit || 0) + 0.15 * m;
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "big_bonk",
-        name: "Big Bonk",
-        type: TYPE.ITEM,
-        desc: "Low chance for extreme damage",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.bigBonkChance = (s.player.bigBonkChance || 0) + 0.02 * m;
-          s.player.bigBonkMult = (s.player.bigBonkMult || 1) + 0.5 * m;
-        },
-        icon: makeIconDraw("time"),
-      },
     ];
 
     const items = [
@@ -1485,15 +1325,13 @@ export default function NeonPitRoguelikeV3() {
         id: "ice_crystal",
         name: "Ice Crystal",
         type: TYPE.ITEM,
-        desc: "Chance to freeze enemies on hit",
+        desc: "Freeze enemies in area on hit",
         apply: (s, r) => {
-          // Ice Crystal gives chance-based freeze (rarity determines chance)
-          // Common: 15%, Uncommon: 25%, Rare: 35%, Legendary: 50%
-          if (r === RARITY.COMMON) s.player.iceCrystalFreezeChance = 0.15;
-          else if (r === RARITY.UNCOMMON) s.player.iceCrystalFreezeChance = 0.25;
-          else if (r === RARITY.RARE) s.player.iceCrystalFreezeChance = 0.35;
-          else if (r === RARITY.LEGENDARY) s.player.iceCrystalFreezeChance = 0.50;
-          s.player.iceCrystalFreezeDuration = 1.2; // Freeze duration
+          // Ice Crystal freezes enemies in an area around the hit (AoE freeze)
+          const m = rarityMult(r);
+          s.player.iceCrystalFreezeChance = 0.2 + 0.15 * m; // 20-50% chance
+          s.player.iceCrystalFreezeRadius = 35 + 15 * m; // AoE radius
+          s.player.iceCrystalFreezeDuration = 1.4 + 0.4 * m; // Longer freeze duration
         },
         icon: makeIconDraw("time"),
       },
@@ -1519,9 +1357,9 @@ export default function NeonPitRoguelikeV3() {
           // Common: -8%, Uncommon: -10%, Rare: -12%, Legendary: -15%
           const reduction = 0.08 + (m - 1) * 0.02;
           s.player.abilityCdMult = Math.max(0.5, (s.player.abilityCdMult || 1) * (1 - reduction));
-          // Also reduce weapon attack cooldowns temporarily
+          // Also reduce weapon attack cooldowns temporarily (haste multiplier > 1 speeds up)
           s.player.buffHasteT = Math.max(s.player.buffHasteT, 4 + 2.5 * m);
-          s.player.buffHasteMult = Math.min(0.74, 0.9 - 0.12 * m);
+          s.player.buffHasteMult = Math.max(1.15, 1.1 + 0.12 * m); // > 1 speeds up cooldown reduction
         },
         icon: makeIconDraw("time"),
       },
@@ -1567,11 +1405,113 @@ export default function NeonPitRoguelikeV3() {
           const cost = Math.max(4, Math.round(6 + s.floor));
           if (p.coins < cost) return;
           p.coins -= cost;
-          p.weaponDamage *= 1 + 0.32 * m;
-          p.maxHp = Math.max(50, Math.round(p.maxHp * (1 - 0.08 * m)));
+          p.weaponDamage *= 1 + 0.28 * m;
+          p.maxHp = Math.max(50, Math.round(p.maxHp * (1 - 0.07 * m)));
           p.hp = Math.min(p.hp, p.maxHp);
         },
         icon: makeIconDraw("revolver"),
+      },
+      {
+        id: "power_gloves",
+        name: "Power Gloves",
+        type: TYPE.ITEM,
+        desc: "+Damage",
+        apply: (s, r) => {
+          const m = rarityMult(r);
+          s.player.weaponDamage *= 1 + 0.14 * m;
+        },
+        icon: makeIconDraw("time"),
+      },
+      {
+        id: "borgar",
+        name: "Borgar",
+        type: TYPE.ITEM,
+        desc: "+Max HP",
+        apply: (s, r) => {
+          const m = rarityMult(r);
+          const p = s.player;
+          p.maxHp = Math.round(p.maxHp + 10 * m);
+          p.hp = Math.min(p.maxHp, p.hp + Math.round(7 * m));
+        },
+        icon: makeIconDraw("time"),
+      },
+      {
+        id: "oats",
+        name: "Oats",
+        type: TYPE.ITEM,
+        desc: "+HP regen",
+        apply: (s, r) => {
+          const m = rarityMult(r);
+          s.player.regen += 0.32 * m;
+        },
+        icon: makeIconDraw("time"),
+      },
+      {
+        id: "golden_glove",
+        name: "Golden Glove",
+        type: TYPE.ITEM,
+        desc: "+Gold from kills",
+        apply: (s, r) => {
+          const m = rarityMult(r);
+          s.player.goldGain *= 1 + 0.07 * m;
+        },
+        icon: makeIconDraw("time"),
+      },
+      {
+        id: "clover",
+        name: "Clover",
+        type: TYPE.ITEM,
+        desc: "+Luck",
+        apply: (s, r) => {
+          const m = rarityMult(r);
+          s.player.luck += 0.18 * m;
+        },
+        icon: makeIconDraw("time"),
+      },
+      {
+        id: "spiky_shield",
+        name: "Spiky Shield",
+        type: TYPE.ITEM,
+        desc: "Reflect damage",
+        apply: (s, r) => {
+          const m = rarityMult(r);
+          s.player.thorns = (s.player.thorns || 0) + 0.12 * m;
+        },
+        icon: makeIconDraw("time"),
+      },
+      {
+        id: "slurp_gloves",
+        name: "Slurp Gloves",
+        type: TYPE.ITEM,
+        desc: "+Lifesteal",
+        apply: (s, r) => {
+          const m = rarityMult(r);
+          s.player.lifesteal = (s.player.lifesteal || 0) + 0.06 * m;
+        },
+        icon: makeIconDraw("time"),
+      },
+      {
+        id: "mirror",
+        name: "Mirror",
+        type: TYPE.ITEM,
+        desc: "Brief invincibility on hit",
+        apply: (s, r) => {
+          const m = rarityMult(r);
+          s.player.iFrameOnHit = (s.player.iFrameOnHit || 0) + 0.12 * m;
+        },
+        icon: makeIconDraw("time"),
+      },
+      {
+        id: "big_bonk",
+        name: "Big Bonk",
+        type: TYPE.ITEM,
+        desc: "Low chance for extreme damage",
+        apply: (s, r) => {
+          const m = rarityMult(r);
+          s.player.bigBonkChance = (s.player.bigBonkChance || 0) + 0.016 * m;
+          s.player.bigBonkMult = (s.player.bigBonkMult || 1) + 0.4 * m;
+        },
+        icon: makeIconDraw("time"),
       },
     ];
 
@@ -1583,6 +1523,7 @@ export default function NeonPitRoguelikeV3() {
         startWeapon: "revolver",
         stats: { hp: 95, speedBase: 270, critChance: 0.08 },
         space: { id: "roll", name: "Roll", cd: 2.8 },
+        perk: "+1.5% Crit per level",
       },
       {
         id: "wizard",
@@ -1591,6 +1532,7 @@ export default function NeonPitRoguelikeV3() {
         startWeapon: "firestaff",
         stats: { hp: 90, speedBase: 260, sizeMult: 1.08 },
         space: { id: "blink", name: "Blink", cd: 3.6 },
+        perk: "+0.15 Luck per level",
       },
       {
         id: "brute",
@@ -1599,6 +1541,7 @@ export default function NeonPitRoguelikeV3() {
         startWeapon: "sword",
         stats: { hp: 125, speedBase: 245, armor: 0.06 },
         space: { id: "slam", name: "Slam", cd: 4.2 },
+        perk: "+8 Max HP per level",
       },
     ];
 
@@ -1673,54 +1616,67 @@ export default function NeonPitRoguelikeV3() {
   function spawnEnemy(s) {
     const { w, h, padding } = s.arena;
     const p = s.player;
-    const minDistFromPlayer = 120; // Minimum distance from player
+    const minDistFromPlayer = 120;
     
-    // Try to spawn away from player
-    let attempts = 0;
     let x = 0;
     let y = 0;
     let validSpawn = false;
+    let attempts = 0;
     
-    while (!validSpawn && attempts < 20) {
-      const side = Math.floor(Math.random() * 4);
-      if (side === 0) {
-        x = rand(padding, w - padding);
-        y = padding;
-      } else if (side === 1) {
-        x = w - padding;
-        y = rand(padding, h - padding);
-      } else if (side === 2) {
-        x = rand(padding, w - padding);
-        y = h - padding;
-      } else {
-        x = padding;
-        y = rand(padding, h - padding);
+    // Try to spawn in walkable areas if level data exists
+    if (s.levelData && s.levelData.walkableAreas && s.levelData.walkableAreas.length > 0) {
+      while (!validSpawn && attempts < 50) {
+        // Pick a random walkable area
+        const area = s.levelData.walkableAreas[Math.floor(Math.random() * s.levelData.walkableAreas.length)];
+        x = rand(area.x + 20, area.x + area.w - 20);
+        y = rand(area.y + 20, area.y + area.h - 20);
+        
+        // Check distance from player
+        const dist2 = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
+        if (dist2 >= minDistFromPlayer * minDistFromPlayer) {
+          validSpawn = true;
+        }
+        attempts++;
       }
-      
-      // Check distance from player
-      const dist2 = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
-      if (dist2 >= minDistFromPlayer * minDistFromPlayer) {
-        validSpawn = true;
-      }
-      attempts++;
     }
     
-    // If still not valid after attempts, spawn at edge anyway
+    // Fallback to edge spawning if no level data or all attempts failed
     if (!validSpawn) {
-      const side = Math.floor(Math.random() * 4);
-      if (side === 0) {
-        x = rand(padding, w - padding);
-        y = padding;
-      } else if (side === 1) {
-        x = w - padding;
-        y = rand(padding, h - padding);
-      } else if (side === 2) {
-        x = rand(padding, w - padding);
-        y = h - padding;
-      } else {
-        x = padding;
-        y = rand(padding, h - padding);
+      attempts = 0;
+      while (!validSpawn && attempts < 20) {
+        const side = Math.floor(Math.random() * 4);
+        const levelW = s.levelData ? s.levelData.w : w;
+        const levelH = s.levelData ? s.levelData.h : h;
+        
+        if (side === 0) {
+          x = rand(padding, levelW - padding);
+          y = padding;
+        } else if (side === 1) {
+          x = levelW - padding;
+          y = rand(padding, levelH - padding);
+        } else if (side === 2) {
+          x = rand(padding, levelW - padding);
+          y = levelH - padding;
+        } else {
+          x = padding;
+          y = rand(padding, levelH - padding);
+        }
+        
+        // Check distance from player
+        const dist2 = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
+        if (dist2 >= minDistFromPlayer * minDistFromPlayer) {
+          validSpawn = true;
+        }
+        attempts++;
       }
+    }
+    
+    // Final fallback - spawn anywhere
+    if (!validSpawn) {
+      const levelW = s.levelData ? s.levelData.w : w;
+      const levelH = s.levelData ? s.levelData.h : h;
+      x = rand(padding, levelW - padding);
+      y = rand(padding, levelH - padding);
     }
 
     // Enemy types based on floor - introduce new enemies at certain floors
@@ -1763,10 +1719,12 @@ export default function NeonPitRoguelikeV3() {
       spitT: 0,
       phase: rand(0, Math.PI * 2),
       xp: Math.round((tier === "brute" ? 7 : tier === "spitter" ? 6 : tier === "runner" ? 5 : 4) * p.difficultyTome),
-      coin: tier === "brute" ? 3 : 2,
+      coin: tier === "brute" ? 5 : 4, // Increased base coin value
       poisonT: 0,
       poisonDps: 0,
-      freezeT: 0,
+      freezeT: 0, // Keep for backwards compatibility
+      slowT: 0, // Slow effect (replaces freeze)
+      slowMult: 1.0, // Speed multiplier when slowed
       burnT: 0,
       burnDps: 0,
       contactCd: rand(0.2, 0.5),
@@ -1811,7 +1769,7 @@ export default function NeonPitRoguelikeV3() {
     const vx = Math.cos(angle) * speed;
     const vy = Math.sin(angle) * speed;
 
-    s.bullets.push({
+    const bullet = {
       x,
       y,
       px: x,
@@ -1838,13 +1796,18 @@ export default function NeonPitRoguelikeV3() {
       hitEnemies: new Set(), // Track hit enemies for pierce/boomerang
       isBone: opts?.isBone ?? false, // For bone rotation
       rotation: angle, // Initial rotation angle for bone
-    });
+      weaponId: opts?.weaponId, // Track which weapon this belongs to
+    };
+
+    s.bullets.push(bullet);
 
     const xNorm = clamp((x / (s.arena.w || 1)) * 2 - 1, -1, 1);
     if (!opts?.enemy) {
       const soundVariant = opts?.soundVariant ?? Math.floor(Math.random() * 3);
       sfxShoot(xNorm, soundVariant);
     }
+    
+    return bullet;
   }
 
   function applyWeapon(p, weaponDef, rarity, previewOnly) {
@@ -1877,6 +1840,7 @@ export default function NeonPitRoguelikeV3() {
           bulletSpeedMult: weaponDef.base.bulletSpeedMult || 1,
           bulletSizeMult: weaponDef.base.bulletSizeMult || 1,
           attackT: 0,
+          hasActiveBoomerang: false, // For bananarang tracking
         };
         p.weapons.push(newWeapon);
         // Track collected weapon
@@ -1913,15 +1877,18 @@ export default function NeonPitRoguelikeV3() {
     existingWeapon.weaponDamage *= 1 + 0.03 * (m - 1); // Reduced from 0.06
     existingWeapon.attackCooldown = Math.max(0.18, existingWeapon.attackCooldown * (1 - 0.015 * (m - 1))); // Reduced from 0.03
     
-    // When getting duplicate weapon, randomly improve one stat
-    const upgradeType = Math.random();
-    if (upgradeType < 0.35) {
+    // When getting duplicate weapon, improve one stat based on level (deterministic)
+    // This cycles through: Projectile -> Damage -> Speed -> Bullet Speed
+    const currentLevel = existingWeapon.level || 1;
+    const upgradeIndex = (currentLevel - 1) % 4;
+    
+    if (upgradeIndex === 0) {
       // Add projectile
       existingWeapon.projectiles = clamp(existingWeapon.projectiles + 1, 1, 16);
-    } else if (upgradeType < 0.6) {
+    } else if (upgradeIndex === 1) {
       // Increase damage
       existingWeapon.weaponDamage *= 1.06; // Reduced from 1.12
-    } else if (upgradeType < 0.85) {
+    } else if (upgradeIndex === 2) {
       // Increase speed (reduce cooldown)
       existingWeapon.attackCooldown = Math.max(0.18, existingWeapon.attackCooldown * 0.96); // Reduced from 0.92
     } else {
@@ -1964,11 +1931,40 @@ export default function NeonPitRoguelikeV3() {
     const bulletR = 4.1 * p.sizeMult;
     const knock = p.knockback;
 
-    // Fire each weapon
-    for (const weapon of p.weapons) {
-      if (weapon.attackT > 0) continue; // Weapon is on cooldown
+      // Fire each weapon
+      for (const weapon of p.weapons) {
+        if (weapon.attackT > 0) continue; // Weapon is on cooldown
+        // For bananarang, check if previous projectile has returned
+        if (weapon.id === "bananarang" && weapon.hasActiveBoomerang) {
+          continue; // Wait for boomerang to return
+        }
 
-      if (weapon.weaponMode === "melee") {
+        // Flamewalker - spawn fire under player feet
+        if (weapon.id === "flamewalker" && weapon.weaponMode === "aura") {
+          const dmgBase = weapon.weaponDamage * (0.84 + 0.03 * s.floor);
+          const crit = Math.random() < clamp(p.critChance, 0, 0.8);
+          const dmg = crit ? dmgBase * 1.6 : dmgBase;
+          const fireRadius = Math.max(45, (weapon.weaponMeleeR || 50) * p.sizeMult);
+          
+          // Spawn burning area under player
+          s.burningAreas.push({
+            x: p.x,
+            y: p.y,
+            t: 0,
+            life: 4.0, // Duration in seconds
+            r: fireRadius,
+            dmg: dmg * 0.18, // Damage per tick
+            tickRate: 0.4, // Damage every 0.4 seconds
+            lastTick: 0,
+          });
+          
+          // Visual effect
+          addParticle(s, p.x, p.y, 12, 20, { size: 3, speed: 0.8 });
+          weapon.attackT = weapon.attackCooldown;
+          continue;
+        }
+
+        if (weapon.weaponMode === "melee") {
         const r = Math.max(34, (weapon.weaponMeleeR || 60) * p.sizeMult);
         const dmgBase = weapon.weaponDamage * (0.84 + 0.03 * s.floor);
         const crit = Math.random() < clamp(p.critChance, 0, 0.8);
@@ -2033,19 +2029,7 @@ export default function NeonPitRoguelikeV3() {
               e.freezeT = Math.max(e.freezeT, 1.05);
             }
             
-            // For flamewalker, place burning area at enemy location
-            if (weapon.weaponEffect === "burn" && weapon.id === "flamewalker") {
-              s.burningAreas.push({
-                x: e.x,
-                y: e.y,
-                t: 0,
-                life: 3.5, // Duration in seconds
-                r: 45, // Radius
-                dmg: dmg * 0.15, // Damage per tick
-                tickRate: 0.5, // Damage every 0.5 seconds
-                lastTick: 0,
-              });
-            }
+            // Flamewalker removed from melee - now uses aura mode
           }
         }
 
@@ -2076,9 +2060,10 @@ export default function NeonPitRoguelikeV3() {
       bulletSize *= sizeMult;
       
       if (weapon.weaponEffect === "poison") {
-        color = "#4dff88";
+        color = "#4dff88"; // Green poison color
         soundVariant = 1; // Different sound for poison
-        bulletSize *= 1.1;
+        bulletSize *= 1.2; // Larger flask visual
+        hasGlow = true; // Glow effect for poison flask
       } else if (weapon.weaponEffect === "freeze") {
         color = "#7bf1ff";
         soundVariant = 2;
@@ -2110,15 +2095,23 @@ export default function NeonPitRoguelikeV3() {
         soundVariant = 0;
       }
 
-      const splashR = weapon.weaponMode === "splash" ? Math.max(26, (weapon.weaponSplashR || 54) * p.sizeMult) : 0;
+      // Splash radius for splash and thrown modes (poison flask)
+      const splashR = (weapon.weaponMode === "splash" || weapon.weaponMode === "thrown") 
+        ? Math.max(26, (weapon.weaponSplashR || 54) * p.sizeMult) 
+        : 0;
 
       // Check if boomerang weapon
       const isBoomerang = weapon.weaponMode === "boomerang";
       
+      // Mark bananarang as having active boomerang
+      if (isBoomerang) {
+        weapon.hasActiveBoomerang = true;
+      }
+      
       if (count === 1) {
         // Single projectile - shoot straight forward
         shootBullet(s, p.x, p.y, baseA, dmg, bulletSpeed, {
-          r: bulletSize,
+          r: bulletSize * (isBoomerang ? 1.8 : 1), // Larger for bananarang visibility
           pierce: weapon.pierce,
           color,
           crit,
@@ -2129,7 +2122,8 @@ export default function NeonPitRoguelikeV3() {
           soundVariant,
           glow: hasGlow,
           boomerang: isBoomerang,
-          maxDist: isBoomerang ? 500 : undefined,
+          maxDist: isBoomerang ? 400 : undefined, // Shorter max distance
+          weaponId: isBoomerang ? weapon.id : undefined, // Track which weapon this belongs to
         });
       } else {
         // Multiple projectiles - first one straight forward, rest spread out with offset
@@ -2151,14 +2145,18 @@ export default function NeonPitRoguelikeV3() {
           life: weapon.id === "bone" ? 4.0 : undefined, // Longer life for bone bullets
         });
         
-        // Additional shots spread out in an arc with position offset to prevent overlap
-        const arc = Math.min(0.95, 0.2 + (count - 1) * 0.06); // Wider arc for better spread
+        // Additional shots spread out in an arc - consistent angle progression
+        // For 2 projectiles: small spread, for 3+: same angle increment per projectile
+        const baseArc = 0.15; // Base arc for 2 projectiles
+        const arcIncrement = 0.08; // Additional angle per extra projectile
+        const arc = Math.min(0.4, baseArc + (count - 2) * arcIncrement); // Cap at 0.4 rad max
         const offsetDist = 12; // Distance to offset perpendicular to direction
         
         for (let i = 1; i < count; i++) {
-          const t = (count - 1) === 1 ? 0.5 : (i - 1) / (count - 2);
-          // Spread angle with some randomness
-          const spreadAngle = lerp(-arc, arc, t) + rand(-spread * 0.4, spread * 0.4);
+          // Even distribution across arc
+          const t = (count - 1) === 1 ? 0.5 : (i - 1) / (count - 1);
+          // Spread angle with minimal randomness
+          const spreadAngle = lerp(-arc, arc, t) + rand(-spread * 0.2, spread * 0.2);
           const a = baseA + spreadAngle;
           
           // Offset position perpendicular to the base angle to prevent overlap
@@ -2262,10 +2260,41 @@ export default function NeonPitRoguelikeV3() {
         else if (bucket === TYPE.TOME) entry = pickWeighted(content.tomes.map((t) => ({ w: 1, t }))).t;
         else entry = pickWeighted(content.items.map((it) => ({ w: 1, t: it }))).t;
 
+        // Prevent same item in different rarities - only allow one version
+        const itemKey = `${bucket}:${entry.id}`;
+        let alreadyUsed = false;
+        for (const usedKey of used) {
+          if (usedKey.startsWith(itemKey)) {
+            alreadyUsed = true;
+            break;
+          }
+        }
+        if (alreadyUsed) continue;
+        
         const key = `${bucket}:${entry.id}:${rarity}`;
-        if (used.has(key)) continue;
         used.add(key);
 
+        // For weapon upgrades, determine upgrade type before preview
+        // Use deterministic selection based on weapon level for consistency
+        let weaponUpgradeType = "";
+        if (bucket === TYPE.WEAPON) {
+          const existingWeapon = s.player.weapons?.find(w => w.id === entry.id);
+          if (existingWeapon) {
+            // Use level-based deterministic selection (cycles through upgrade types)
+            const level = existingWeapon.level || 1;
+            const upgradeIndex = (level - 1) % 4;
+            if (upgradeIndex === 0) {
+              weaponUpgradeType = "+1 Projectile";
+            } else if (upgradeIndex === 1) {
+              weaponUpgradeType = "+6% Damage";
+            } else if (upgradeIndex === 2) {
+              weaponUpgradeType = "+4% Attack Speed";
+            } else {
+              weaponUpgradeType = "+4% Projectile Speed";
+            }
+          }
+        }
+        
         const preview = buildPreview(s, (pp) => {
           if (bucket === TYPE.WEAPON) applyWeapon(pp, entry, rarity, true);
           else if (bucket === TYPE.TOME) entry.apply(pp, rarity);
@@ -2281,7 +2310,11 @@ export default function NeonPitRoguelikeV3() {
             const m = rarityMult(rarity);
             const levelBonus = existingWeapon.level || 1;
             const nextLevel = levelBonus + 1;
+            
             detailedDesc = `Level ${nextLevel} ${entry.name} (${rarity})`;
+            if (weaponUpgradeType) {
+              detailedDesc += `\n${weaponUpgradeType}`;
+            }
             // Add preview info from buildPreview
             if (preview) {
               detailedDesc += `\n${preview}`;
@@ -2474,14 +2507,20 @@ export default function NeonPitRoguelikeV3() {
     return { bucket, choices: rollChoicesOfType(s, bucket) };
   }
 
-  function startBoss(s, seconds) {
+  function startBoss(s, seconds, bossX = null, bossY = null) {
     const { w, padding } = s.arena;
     s.boss.active = true;
     s.boss.r = 38;
     s.boss.maxHp = Math.round(980 + s.floor * 240);
     s.boss.hp = s.boss.maxHp;
-    s.boss.x = w * 0.5;
-    s.boss.y = padding + 90;
+    // Spawn boss at teleporter location if provided, otherwise center
+    if (bossX !== null && bossY !== null) {
+      s.boss.x = bossX;
+      s.boss.y = bossY;
+    } else {
+      s.boss.x = w * 0.5;
+      s.boss.y = padding + 90;
+    }
     s.boss.timeLeft = seconds;
     s.boss.spitT = 0.6;
     s.boss.enraged = false;
@@ -2661,6 +2700,14 @@ export default function NeonPitRoguelikeV3() {
       // Ensure player spawns in the center of the room, within room bounds
       player.x = clamp(startRoom.x + startRoom.w / 2, startRoom.x + padding, startRoom.x + startRoom.w - padding);
       player.y = clamp(startRoom.y + startRoom.h / 2, startRoom.y + padding, startRoom.y + startRoom.h - padding);
+      
+      // Ensure player is in walkable area
+      if (s.levelData.walkableAreas && !isPointWalkable(player.x, player.y, s.levelData, player.r || 12)) {
+        const walkable = findNearestWalkable(player.x, player.y, s.levelData, player.r || 12);
+        player.x = walkable.x;
+        player.y = walkable.y;
+      }
+      
       // Set initial camera position
       s.camera.x = clamp(player.x - w / 2, 0, Math.max(0, s.levelData.w - w));
       s.camera.y = clamp(player.y - h / 2, 0, Math.max(0, s.levelData.h - h));
@@ -2889,7 +2936,7 @@ export default function NeonPitRoguelikeV3() {
 
     if (best.kind === INTERACT.CHEST) {
       s.chestOpens += 1;
-      pushCombatText(s, p.x, p.y - 30, "CHEST OPENED", "#ffd44a", { size: 16, life: 1.2 });
+      // Removed "CHEST OPENED" text to avoid blocking upgrade display
       s.interact = s.interact.filter((x) => x.id !== best.id);
       s.bullets = [];
 
@@ -2918,22 +2965,40 @@ export default function NeonPitRoguelikeV3() {
 
     if (best.kind === INTERACT.SHRINE) {
       p.buffHasteT = Math.max(p.buffHasteT, 6);
-      p.buffHasteMult = Math.min(p.buffHasteMult, 0.75);
+      p.buffHasteMult = Math.max(p.buffHasteMult, 1.25); // > 1 speeds up (25% faster)
       bumpShake(s, 2, 0.06);
       // Visual feedback for speed boost
       addParticle(s, p.x, p.y, 20, 120, { size: 3, speed: 1.2 });
-      pushCombatText(s, p.x, p.y - 30, `SPEED BOOST +${Math.round((1 - p.buffHasteMult) * 100)}%`, "#4dff88", { size: 16, life: 1.2 });
+      pushCombatText(s, p.x, p.y - 30, `SPEED BOOST +${Math.round((p.buffHasteMult - 1) * 100)}%`, "#4dff88", { size: 16, life: 1.2 });
       s.interact = s.interact.filter((x) => x.id !== best.id);
       return;
     }
 
     if (best.kind === INTERACT.MAGNET_SHRINE) {
-      // Activate magnet effect - gradually pulls orbs
-      p.magnet = Math.max(p.magnet, 2.5); // Increase magnet strength
-      p.magnetT = 8.0; // Duration in seconds
+      // Magnet shrine - instantly pull all gold and XP on the floor
       bumpShake(s, 2, 0.06);
       addParticle(s, p.x, p.y, 20, 120, { size: 3, speed: 1.2 });
       pushCombatText(s, p.x, p.y - 30, "MAGNET SHRINE", "#ffd44a", { size: 16, life: 1.2 });
+      
+      // Instantly collect all XP gems on the floor
+      for (const g of s.gems) {
+        if (g.t <= g.life) {
+          awardXP(s, g.v, g.x, g.y);
+        }
+      }
+      s.gems = [];
+      
+      // Instantly collect all coins on the floor
+      for (const c of s.coins) {
+        if (c.t <= c.life) {
+          const actualGold = Math.round(c.v * p.goldGain);
+          p.coins += actualGold;
+          s.score += actualGold * 3;
+          pushCombatText(s, c.x, c.y - 14, `+${actualGold}`, "#ffd44a", { size: 11, life: 0.7 });
+        }
+      }
+      s.coins = [];
+      
       s.interact = s.interact.filter((x) => x.id !== best.id);
       return;
     }
@@ -2956,9 +3021,13 @@ export default function NeonPitRoguelikeV3() {
     }
 
     if (best.kind === INTERACT.BOSS_TP) {
+      // Store boss teleporter position for boss spawn
+      const u = uiRef.current;
+      u.bossTpX = best.x;
+      u.bossTpY = best.y;
       s.interact = s.interact.filter((x) => x.id !== best.id);
       if (!s.boss.active) {
-        startBoss(s, 120); // Longer boss timer
+        startBoss(s, 120, best.x, best.y); // Spawn boss at teleporter location
         s.bossPortalSpawned = false; // Reset for next floor
       }
     }
@@ -3029,22 +3098,33 @@ export default function NeonPitRoguelikeV3() {
       s.hitStopT = Math.max(s.hitStopT, 0.02);
       addParticle(s, p.x, p.y, 22, 40);
       
-      // Add slice effect for slam
-      const keys = keysRef.current;
-      const mx = (keys.has("ArrowRight") || keys.has("d") ? 1 : 0) - (keys.has("ArrowLeft") || keys.has("a") ? 1 : 0);
-      const my = (keys.has("ArrowDown") || keys.has("s") ? 1 : 0) - (keys.has("ArrowUp") || keys.has("w") ? 1 : 0);
-      const len = Math.hypot(mx, my) || 1;
-      const slamAngle = len > 0 ? Math.atan2(my, mx) : 0;
-      s.floaters.push({
-        x: p.x,
-        y: p.y,
-        t: 0,
-        life: 0.3,
-        angle: slamAngle,
-        length: r * 1.2,
-        type: "slice",
-        color: "#ffd44a",
-      });
+      // Shockwave effect for slam (replaces slice)
+      for (let i = 0; i < 3; i++) {
+        s.floaters.push({
+          x: p.x,
+          y: p.y,
+          t: i * 0.05,
+          life: 0.4,
+          type: "shockwave",
+          r: r * 0.3 + i * r * 0.35,
+          color: i === 0 ? "#ff7a3d" : i === 1 ? "#ffaa44" : "#ffd44a",
+        });
+      }
+      
+      // Impact particles
+      for (let i = 0; i < 12; i++) {
+        const angle = (Math.PI * 2 * i) / 12;
+        s.floaters.push({
+          x: p.x,
+          y: p.y,
+          t: 0,
+          life: 0.35,
+          type: "particle",
+          vx: Math.cos(angle) * (80 + Math.random() * 40),
+          vy: Math.sin(angle) * (80 + Math.random() * 40),
+          color: "#ffd44a",
+        });
+      }
 
       for (const e of s.enemies) {
         if (e.hp <= 0) continue;
@@ -3058,8 +3138,10 @@ export default function NeonPitRoguelikeV3() {
           const dx = e.x - p.x;
           const dy = e.y - p.y;
           const dd = Math.hypot(dx, dy) || 1;
-          e.x += (dx / dd) * 52;
-          e.y += (dy / dd) * 52;
+          // Increased knockback for slam
+          const knockbackDist = 95;
+          e.x += (dx / dd) * knockbackDist;
+          e.y += (dy / dd) * knockbackDist;
         }
       }
 
@@ -3142,16 +3224,30 @@ export default function NeonPitRoguelikeV3() {
     const baseVx = (mx / len) * baseV;
     const baseVy = (my / len) * baseV;
 
-    p.x += baseVx * dt;
-    p.y += baseVy * dt;
+    // Try to move player
+    const newX = p.x + baseVx * dt;
+    const newY = p.y + baseVy * dt;
     
-    // Clamp to level bounds if procedural level exists, otherwise arena bounds
-    if (s.levelData) {
-      p.x = clamp(p.x, padding, s.levelData.w - padding);
-      p.y = clamp(p.y, padding, s.levelData.h - padding);
+    // Check if new position is walkable
+    if (s.levelData && s.levelData.walkableAreas) {
+      // Try X movement first
+      if (isPointWalkable(newX, p.y, s.levelData, p.r || 12)) {
+        p.x = newX;
+      }
+      // Then try Y movement
+      if (isPointWalkable(p.x, newY, s.levelData, p.r || 12)) {
+        p.y = newY;
+      }
+      // If both failed, try to find nearest walkable position
+      if (!isPointWalkable(p.x, p.y, s.levelData, p.r || 12)) {
+        const walkable = findNearestWalkable(p.x, p.y, s.levelData, p.r || 12);
+        p.x = walkable.x;
+        p.y = walkable.y;
+      }
     } else {
-      p.x = clamp(p.x, padding, w - padding);
-      p.y = clamp(p.y, padding, h - padding);
+      // Fallback to simple bounds clamping
+      p.x = clamp(newX, padding, (s.levelData ? s.levelData.w : w) - padding);
+      p.y = clamp(newY, padding, (s.levelData ? s.levelData.h : h) - padding);
     }
 
     const haste = p.buffHasteT > 0 ? p.buffHasteMult : 1;
@@ -3200,19 +3296,36 @@ export default function NeonPitRoguelikeV3() {
       if (e.poisonT > 0) {
         e.poisonT = Math.max(0, e.poisonT - dt);
         if (e.poisonDps > 0) {
-          e.hp -= e.poisonDps * dt;
+          const dmg = e.poisonDps * dt;
+          e.hp -= dmg;
           e.hitT = Math.max(e.hitT, 0.03);
+          // Combat text for poison DoT (every 0.5 seconds)
+          if (!e._lastPoisonText || e._lastPoisonText <= 0) {
+            pushCombatText(s, e.x, e.y - 14, `-${Math.round(dmg * 10)}`, "#4dff88", { size: 9, life: 0.4 });
+            e._lastPoisonText = 0.5;
+          } else {
+            e._lastPoisonText -= dt;
+          }
         }
       }
       if (e.burnT > 0) {
         e.burnT = Math.max(0, e.burnT - dt);
         if (e.burnDps > 0) {
-          e.hp -= e.burnDps * dt;
+          const dmg = e.burnDps * dt;
+          e.hp -= dmg;
           e.hitT = Math.max(e.hitT, 0.03);
+          // Combat text for burn DoT (every 0.5 seconds)
+          if (!e._lastBurnText || e._lastBurnText <= 0) {
+            pushCombatText(s, e.x, e.y - 14, `-${Math.round(dmg * 10)}`, "#ff7a3d", { size: 9, life: 0.4 });
+            e._lastBurnText = 0.5;
+          } else {
+            e._lastBurnText -= dt;
+          }
         }
       }
-      if (e.freezeT > 0) {
-        e.freezeT = Math.max(0, e.freezeT - dt);
+      // Changed freeze to slow effect
+      if (e.slowT > 0) {
+        e.slowT = Math.max(0, e.slowT - dt);
         continue;
       }
 
@@ -3228,8 +3341,22 @@ export default function NeonPitRoguelikeV3() {
         e.spitT = Math.max(0, e.spitT - dt);
         const desired = 240;
         const push = d < desired ? -1 : 1;
-        e.x += ux * e.speed * dt * 0.62 * push;
-        e.y += uy * e.speed * dt * 0.62 * push;
+        const slowMult = e.slowT > 0 ? (e.slowMult || 0.5) : 1.0;
+        const newEx = e.x + ux * e.speed * dt * 0.62 * push * slowMult;
+        const newEy = e.y + uy * e.speed * dt * 0.62 * push * slowMult;
+        
+        // Check if new position is walkable
+        if (s.levelData && s.levelData.walkableAreas) {
+          if (isPointWalkable(newEx, e.y, s.levelData, e.r || 8)) {
+            e.x = newEx;
+          }
+          if (isPointWalkable(e.x, newEy, s.levelData, e.r || 8)) {
+            e.y = newEy;
+          }
+        } else {
+          e.x = newEx;
+          e.y = newEy;
+        }
 
         if (d < 460 && e.spitT <= 0) {
           const a = Math.atan2(dy, dx);
@@ -3237,8 +3364,22 @@ export default function NeonPitRoguelikeV3() {
           e.spitT = 1.05;
         }
       } else {
-        e.x += ux * e.speed * dt;
-        e.y += uy * e.speed * dt;
+        const slowMult = e.slowT > 0 ? (e.slowMult || 0.5) : 1.0;
+        const newEx = e.x + ux * e.speed * dt * slowMult;
+        const newEy = e.y + uy * e.speed * dt * slowMult;
+        
+        // Check if new position is walkable
+        if (s.levelData && s.levelData.walkableAreas) {
+          if (isPointWalkable(newEx, e.y, s.levelData, e.r || 8)) {
+            e.x = newEx;
+          }
+          if (isPointWalkable(e.x, newEy, s.levelData, e.r || 8)) {
+            e.y = newEy;
+          }
+        } else {
+          e.x = newEx;
+          e.y = newEy;
+        }
       }
 
       // Clamp enemies to level bounds
@@ -3291,9 +3432,16 @@ export default function NeonPitRoguelikeV3() {
           b.vx = (dx / dist) * speed * 1.2; // Faster return
           b.vy = (dy / dist) * speed * 1.2;
           
-          // If close enough to player, destroy bullet
+          // If close enough to player, destroy bullet and mark weapon as ready
           if (distFromPlayer < 15) {
             b.t = b.life + 1;
+            // Mark bananarang weapon as ready for next attack
+            if (b.weaponId === "bananarang") {
+              const weapon = p.weapons?.find(w => w.id === "bananarang");
+              if (weapon) {
+                weapon.hasActiveBoomerang = false;
+              }
+            }
             continue;
           }
         }
@@ -3431,14 +3579,14 @@ export default function NeonPitRoguelikeV3() {
 
           // Poison effect always applies if bullet has poison effect, or chance-based
           const procPoison = b.effect === "poison" || (p.poisonChance > 0 && Math.random() < p.poisonChance);
-          // Ice Crystal gives chance-based freeze, or regular freeze chance
-          let procFreeze = false;
+          // Changed freeze to slow effect (less OP)
+          let procSlow = false;
           if (b.effect === "freeze") {
-            procFreeze = true;
+            procSlow = true;
           } else if (p.iceCrystalFreezeChance && Math.random() < p.iceCrystalFreezeChance) {
-            procFreeze = true;
+            procSlow = true;
           } else if (p.freezeChance > 0 && Math.random() < p.freezeChance) {
-            procFreeze = true;
+            procSlow = true;
           }
           const procBurn = b.effect === "burn";
 
@@ -3449,16 +3597,63 @@ export default function NeonPitRoguelikeV3() {
             e.poisonT = Math.max(e.poisonT || 0, poisonDuration);
             e.poisonDps = Math.max(e.poisonDps || 0, Math.max(3, b.dmg * poisonDpsMult));
           }
-          if (procFreeze) {
-            const freezeDuration = p.iceCrystalFreezeChance ? (p.iceCrystalFreezeDuration || 1.2) : 1.05;
-            e.freezeT = Math.max(e.freezeT || 0, freezeDuration);
+          
+          if (procSlow) {
+            const slowDuration = p.iceCrystalFreezeChance ? (p.iceCrystalFreezeDuration || 1.2) : 1.05;
+            const slowAmount = 0.5; // 50% speed reduction
+            e.slowT = Math.max(e.slowT || 0, slowDuration);
+            e.slowMult = slowAmount; // Store slow multiplier
+            
+            // Ice Crystal AoE slow - slow nearby enemies
+            if (p.iceCrystalFreezeRadius && p.iceCrystalFreezeChance && Math.random() < p.iceCrystalFreezeChance) {
+              const slowR2 = p.iceCrystalFreezeRadius * p.iceCrystalFreezeRadius;
+              for (const ee of s.enemies) {
+                if (ee.hp <= 0 || ee === e) continue;
+                if (dist2(ee.x, ee.y, e.x, e.y) <= slowR2) {
+                  ee.slowT = Math.max(ee.slowT || 0, slowDuration);
+                  ee.slowMult = slowAmount;
+                }
+              }
+            }
           }
           if (procBurn) {
             e.burnT = Math.max(e.burnT || 0, 2.0);
             e.burnDps = Math.max(e.burnDps || 0, Math.max(3, b.dmg * 0.22));
           }
 
-          if (b.splashR > 0) {
+          // For thrown weapons (poison flask), trigger splash on hit
+          if (b.splashR > 0 && b.effect === "poison") {
+            const r2 = b.splashR * b.splashR;
+            for (const ee of s.enemies) {
+              if (ee.hp <= 0) continue;
+              if (ee === e) continue; // Already hit the main target
+              if (dist2(ee.x, ee.y, b.x, b.y) <= r2) {
+                ee.hp -= b.dmg * 0.65;
+                ee.hitT = 0.12;
+                const dealt = Math.max(1, Math.round(b.dmg * 0.65));
+                pushCombatText(s, ee.x, ee.y - 14, String(dealt), "#4dff88", { size: 12, life: 0.75 });
+                
+                // Apply poison to all enemies hit by splash
+                const poisonDuration = 3.5;
+                const poisonDpsMult = 0.4;
+                ee.poisonT = Math.max(ee.poisonT || 0, poisonDuration);
+                ee.poisonDps = Math.max(ee.poisonDps || 0, Math.max(3, b.dmg * poisonDpsMult));
+              }
+            }
+            if (s.boss.active) {
+              const bossD2 = dist2(s.boss.x, s.boss.y, b.x, b.y);
+              if (bossD2 <= r2) {
+                s.boss.hp -= b.dmg * 0.65;
+                const dealt = Math.max(1, Math.round(b.dmg * 0.65));
+                pushCombatText(s, s.boss.x, s.boss.y - s.boss.r - 10, String(dealt), "#4dff88", { size: 12, life: 0.75 });
+              }
+            }
+            // Green poison splash effect
+            addParticle(s, b.x, b.y, 15, 120, { size: 4, speed: 1.0 });
+            // Remove bullet after splash
+            b.t = b.life + 1;
+          } else if (b.splashR > 0) {
+            // Regular splash (non-poison) - only on expiration
             const r2 = b.splashR * b.splashR;
             for (const ee of s.enemies) {
               if (ee.hp <= 0) continue;
@@ -3468,14 +3663,6 @@ export default function NeonPitRoguelikeV3() {
                 ee.hitT = 0.12;
                 const dealt = Math.max(1, Math.round(b.dmg * 0.65));
                 pushCombatText(s, ee.x, ee.y - 14, String(dealt), "#ff7a3d", { size: 12, life: 0.75 });
-                
-                // Apply poison to all enemies hit by splash (for poison flask)
-                if (b.effect === "poison") {
-                  const poisonDuration = 3.5;
-                  const poisonDpsMult = 0.4;
-                  ee.poisonT = Math.max(ee.poisonT || 0, poisonDuration);
-                  ee.poisonDps = Math.max(ee.poisonDps || 0, Math.max(3, b.dmg * poisonDpsMult));
-                }
               }
             }
             if (s.boss.active) {
@@ -3484,22 +3671,18 @@ export default function NeonPitRoguelikeV3() {
                 s.boss.hp -= b.dmg * 0.65;
                 const dealt = Math.max(1, Math.round(b.dmg * 0.65));
                 pushCombatText(s, s.boss.x, s.boss.y - s.boss.r - 10, String(dealt), "#ff7a3d", { size: 12, life: 0.75 });
-                
-                // Apply poison to boss hit by splash (for poison flask)
-                if (b.effect === "poison") {
-                  // Boss poison handling would go here if needed
-                }
               }
             }
             addParticle(s, b.x, b.y, 10, 30);
           }
 
-          if (b.knock > 0) {
+          // Apply knockback from player's knockback stat
+          if (p.knockback > 0) {
             const dx = e.x - b.x;
             const dy = e.y - b.y;
             const dd = Math.hypot(dx, dy) || 1;
-            e.x += (dx / dd) * b.knock * 0.02;
-            e.y += (dy / dd) * b.knock * 0.02;
+            e.x += (dx / dd) * p.knockback * 0.03;
+            e.y += (dy / dd) * p.knockback * 0.03;
           }
           
           // Sound already played above for crit/normal hits
@@ -3806,6 +3989,14 @@ export default function NeonPitRoguelikeV3() {
           const startRoom = s.levelData.rooms[0];
           p.x = clamp(startRoom.x + startRoom.w / 2, startRoom.x + padding, startRoom.x + startRoom.w - padding);
           p.y = clamp(startRoom.y + startRoom.h / 2, startRoom.y + padding, startRoom.y + startRoom.h - padding);
+          
+          // Ensure player is in walkable area
+          if (s.levelData.walkableAreas && !isPointWalkable(p.x, p.y, s.levelData, p.r || 12)) {
+            const walkable = findNearestWalkable(p.x, p.y, s.levelData, p.r || 12);
+            p.x = walkable.x;
+            p.y = walkable.y;
+          }
+          
           // Reset camera to player position
           s.camera.x = clamp(p.x - s.arena.w / 2, 0, Math.max(0, s.levelData.w - s.arena.w));
           s.camera.y = clamp(p.y - s.arena.h / 2, 0, Math.max(0, s.levelData.h - s.arena.h));
@@ -3847,7 +4038,7 @@ export default function NeonPitRoguelikeV3() {
 
     for (const f of s.floaters) {
       f.t += dt;
-      if (f.type !== "slice") {
+      if (f.type !== "slice" && f.type !== "shockwave" && f.type !== "particle") {
         f.y -= 26 * dt;
       }
     }
@@ -3860,19 +4051,23 @@ export default function NeonPitRoguelikeV3() {
       if (area.lastTick === undefined) area.lastTick = 0;
       area.lastTick += dt;
       
-      // Damage enemies in area
-      if (area.lastTick >= area.tickRate) {
-        area.lastTick = 0;
-        const r2 = area.r * area.r;
-        for (const e of s.enemies) {
-          if (e.hp <= 0) continue;
-          if (dist2(e.x, e.y, area.x, area.y) <= r2) {
-            e.hp -= area.dmg;
-            e.hitT = 0.08;
-            e.burnT = Math.max(e.burnT || 0, 1.5);
-            e.burnDps = Math.max(e.burnDps || 0, Math.max(2, area.dmg * 0.3));
+        // Damage enemies in area and apply burn for duration
+        if (area.lastTick >= area.tickRate) {
+          area.lastTick = 0;
+          const r2 = area.r * area.r;
+          for (const e of s.enemies) {
+            if (e.hp <= 0) continue;
+            if (dist2(e.x, e.y, area.x, area.y) <= r2) {
+              const dmg = area.dmg;
+              e.hp -= dmg;
+              e.hitT = 0.08;
+              // Combat text for flamewalker DoT
+              pushCombatText(s, e.x, e.y - 14, `-${Math.round(dmg)}`, "#ff7a3d", { size: 10, life: 0.5 });
+              // Apply burn for the full duration while in flames
+              e.burnT = Math.max(e.burnT || 0, area.life - area.t + 0.5); // Burn for remaining fire duration + buffer
+              e.burnDps = Math.max(e.burnDps || 0, Math.max(2, area.dmg * 0.35));
+            }
           }
-        }
         if (s.boss.active && s.boss.hp > 0) {
           const bossD2 = dist2(s.boss.x, s.boss.y, area.x, area.y);
           if (bossD2 <= r2) {
@@ -3981,96 +4176,30 @@ export default function NeonPitRoguelikeV3() {
       corrLight = 11;
     }
     
-    // Draw solid background
+    // Draw simple square map background
     ctx.fillStyle = `hsl(${bgHue}, ${bgSat}%, ${bgLight}%)`;
     if (s.levelData) {
+      // Fill entire level area
       ctx.fillRect(0, 0, s.levelData.w, s.levelData.h);
       
-      // Draw water pools first (under everything) - only in grassland/forest
-      if (s.levelData.water && (biome === "grassland" || biome === "forest")) {
-        const waterHue = biome === "winter" ? 200 : (biome === "desert" ? 200 : hue + 180);
-        ctx.fillStyle = `hsla(${waterHue}, 60%, 20%, 0.4)`;
-        ctx.strokeStyle = `hsla(${waterHue}, 60%, 30%, 0.6)`;
-        ctx.lineWidth = 2;
-        for (const pool of s.levelData.water) {
-          ctx.fillRect(pool.x, pool.y, pool.w, pool.h);
-          ctx.strokeRect(pool.x, pool.y, pool.w, pool.h);
-        }
-      }
-      
-      // Draw corridors as walkable areas (subtle)
-      ctx.fillStyle = `hsl(${roomHue}, ${roomSat}%, ${corrLight}%)`;
-      for (const corr of s.levelData.corridors) {
-        ctx.fillRect(corr.x, corr.y, corr.w, corr.h);
-      }
-      
-      // Draw rooms as walkable areas (slightly lighter)
-      ctx.fillStyle = `hsl(${roomHue}, ${roomSat}%, ${roomLight}%)`;
-      for (const room of s.levelData.rooms) {
+      // Draw walkable area (simple square)
+      if (s.levelData.rooms && s.levelData.rooms.length > 0) {
+        const room = s.levelData.rooms[0];
+        ctx.fillStyle = `hsl(${roomHue}, ${roomSat}%, ${roomLight}%)`;
         ctx.fillRect(room.x, room.y, room.w, room.h);
-        // Subtle room border
-        ctx.strokeStyle = `hsl(${roomHue}, ${roomSat + 5}%, ${roomLight + 4}%)`;
-        ctx.lineWidth = 1;
+        
+        // Draw border around walkable area
+        ctx.strokeStyle = `hsl(${bgHue}, ${bgSat}%, ${bgLight - 5}%)`;
+        ctx.lineWidth = 4;
         ctx.strokeRect(room.x, room.y, room.w, room.h);
       }
       
-      // Draw biome-specific decorations
-      if (s.levelData.grass && (biome === "grassland" || biome === "forest")) {
-        const grassHue = biome === "forest" ? 120 : (hue + 60);
-        ctx.fillStyle = `hsl(${grassHue}, 50%, 18%)`;
-        for (const g of s.levelData.grass) {
-          ctx.beginPath();
-          ctx.arc(g.x, g.y, g.size, 0, Math.PI * 2);
-          ctx.fill();
-          // Add a few smaller dots for texture
-          ctx.fillStyle = `hsl(${grassHue}, 50%, 22%)`;
-          ctx.beginPath();
-          ctx.arc(g.x - g.size * 0.3, g.y - g.size * 0.3, g.size * 0.4, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = `hsl(${grassHue}, 50%, 18%)`;
-        }
-      }
-      
-      // Draw rocks
-      if (s.levelData.rocks) {
-        for (const rock of s.levelData.rocks) {
-          const rockHue = biome === "desert" ? 30 : (biome === "winter" ? 220 : (biome === "volcanic" ? 20 : 0));
-          const rockSat = biome === "desert" ? 40 : (biome === "winter" ? 25 : (biome === "volcanic" ? 50 : 30));
-          const rockLight = biome === "desert" ? 25 : (biome === "winter" ? 30 : (biome === "volcanic" ? 20 : 15));
-          
-          ctx.fillStyle = `hsl(${rockHue}, ${rockSat}%, ${rockLight}%)`;
-          ctx.beginPath();
-          ctx.arc(rock.x, rock.y, rock.r, 0, Math.PI * 2);
-          ctx.fill();
-          
-          // Add shadow/highlight for depth
-          if (rock.type === "large") {
-            ctx.fillStyle = `hsl(${rockHue}, ${rockSat}%, ${rockLight - 3}%)`;
-            ctx.beginPath();
-            ctx.arc(rock.x - rock.r * 0.3, rock.y - rock.r * 0.3, rock.r * 0.6, 0, Math.PI * 2);
-            ctx.fill();
-          }
-        }
-      }
-      
-      // Draw obstacles
-      ctx.fillStyle = `hsl(${roomHue}, ${roomSat - 15}%, ${roomLight - 1}%)`;
-      for (const obs of s.levelData.obstacles) {
-        ctx.beginPath();
-        ctx.arc(obs.x, obs.y, obs.r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      
-      // Draw clear map boundaries (using biome colors)
+      // Draw outer boundary
       ctx.strokeStyle = `hsl(${roomHue}, ${roomSat + 10}%, ${roomLight + 8}%)`;
       ctx.lineWidth = 4;
       ctx.strokeRect(0, 0, s.levelData.w, s.levelData.h);
-      
-      // Draw inner boundary for clarity
-      ctx.strokeStyle = `hsl(${roomHue}, ${roomSat + 5}%, ${roomLight + 5}%)`;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(2, 2, s.levelData.w - 4, s.levelData.h - 4);
     } else {
+      // Fallback if no level data
       ctx.fillRect(0, 0, w, h);
       ctx.strokeStyle = `hsl(${hue}, 45%, 18%)`;
       ctx.lineWidth = 2;
@@ -4233,25 +4362,38 @@ export default function NeonPitRoguelikeV3() {
       // Firey effect for burn weapons
       // Check boomerang first (before other effects)
       if (b.boomerang) {
-        // Special drawing for boomerang (bananarang) - always visible
-        ctx.fillStyle = b.color || "#ffd700";
+        // Special drawing for boomerang (bananarang) - highly visible
+        ctx.save();
+        // Outer glow - very visible
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = "#ffd700";
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = "#ffd700";
         ctx.beginPath();
-        ctx.arc(b.x, b.y, b.r * 1.2, 0, Math.PI * 2);
+        ctx.arc(b.x, b.y, b.r * 1.5, 0, Math.PI * 2);
         ctx.fill();
+        ctx.shadowBlur = 0;
+        
+        // Main body - bright yellow
+        ctx.globalAlpha = 1.0;
+        ctx.fillStyle = "#ffd700";
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+        ctx.fill();
+        
         // Inner highlight
         ctx.fillStyle = "#ffed4e";
         ctx.beginPath();
         ctx.arc(b.x, b.y, b.r * 0.6, 0, Math.PI * 2);
         ctx.fill();
-        // Add glow effect for visibility
-        ctx.shadowBlur = 8;
-        ctx.shadowColor = "#ffd700";
-        ctx.globalAlpha = 0.6;
+        
+        // Center dot
+        ctx.fillStyle = "#ffffff";
         ctx.beginPath();
-        ctx.arc(b.x, b.y, b.r * 1.5, 0, Math.PI * 2);
+        ctx.arc(b.x, b.y, b.r * 0.3, 0, Math.PI * 2);
         ctx.fill();
-        ctx.shadowBlur = 0;
-        ctx.globalAlpha = 1;
+        
+        ctx.restore();
       } else if (b.isBone) {
         // Special drawing for bone - draw as rotating rectangle
         ctx.save();
@@ -4299,8 +4441,8 @@ export default function NeonPitRoguelikeV3() {
 
     for (const e of s.enemies) {
       if (e.hp <= 0) continue;
-      const frozen = e.freezeT > 0;
-      let col = frozen ? "#7bf1ff" : e.tier === "brute" ? "#ff7a3d" : e.tier === "spitter" ? "#ff5d5d" : e.tier === "runner" ? "#c23bff" : "#e6e8ff";
+      const slowed = e.slowT > 0;
+      let col = slowed ? "#7bf1ff" : e.tier === "brute" ? "#ff7a3d" : e.tier === "spitter" ? "#ff5d5d" : e.tier === "runner" ? "#c23bff" : "#e6e8ff";
       
       // Red flash when taking damage
       if (e.hitT > 0) {
@@ -4451,20 +4593,34 @@ export default function NeonPitRoguelikeV3() {
       }
     }
 
-    // Draw burning areas (ground fire)
+    // Draw burning areas (ground fire) - more subtle visual
     for (const area of s.burningAreas) {
       const t = clamp(1 - area.t / area.life, 0, 1);
-      ctx.globalAlpha = t * 0.6;
+      const pulse = Math.sin(s.t * 6 + area.t * 2) * 0.3 + 0.7;
+      
+      // Outer glow - very subtle
+      ctx.globalAlpha = t * 0.15 * pulse;
       ctx.fillStyle = "#ff7a3d";
       ctx.beginPath();
       ctx.arc(area.x, area.y, area.r, 0, Math.PI * 2);
       ctx.fill();
-      // Inner bright core
-      ctx.globalAlpha = t * 0.9;
+      
+      // Inner ring - subtle pattern
+      ctx.globalAlpha = t * 0.25 * pulse;
       ctx.fillStyle = "#ffaa44";
       ctx.beginPath();
-      ctx.arc(area.x, area.y, area.r * 0.6, 0, Math.PI * 2);
+      ctx.arc(area.x, area.y, area.r * 0.7, 0, Math.PI * 2);
       ctx.fill();
+      
+      // Small bright core - very small and subtle
+      ctx.globalAlpha = t * 0.4 * pulse;
+      ctx.fillStyle = "#ffcc66";
+      ctx.beginPath();
+      ctx.arc(area.x, area.y, area.r * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Reset alpha
+      ctx.globalAlpha = 1.0;
     }
     
     // Draw auras (player AoE effects)
@@ -4485,9 +4641,30 @@ export default function NeonPitRoguelikeV3() {
       ctx.fill();
     }
     
-    // Draw slice effects
+    // Draw slice effects, shockwaves, and particles
     for (const f of s.floaters) {
-      if (f.type === "slice") {
+      if (f.type === "shockwave") {
+        const t = clamp(f.t / f.life, 0, 1);
+        ctx.save();
+        ctx.globalAlpha = (1 - t) * 0.8;
+        ctx.strokeStyle = f.color;
+        ctx.lineWidth = 3 - t * 2;
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, f.r * (0.3 + t * 0.7), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+        continue;
+      } else if (f.type === "particle") {
+        const t = clamp(f.t / f.life, 0, 1);
+        ctx.save();
+        ctx.globalAlpha = 1 - t;
+        ctx.fillStyle = f.color;
+        ctx.beginPath();
+        ctx.arc(f.x + (f.vx || 0) * f.t, f.y + (f.vy || 0) * f.t, 3 * (1 - t), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        continue;
+      } else if (f.type === "slice") {
         const t = clamp(1 - f.t / f.life, 0, 1);
         ctx.globalAlpha = t;
         ctx.strokeStyle = f.color || "#ffffff";
@@ -4529,15 +4706,15 @@ export default function NeonPitRoguelikeV3() {
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform to identity
     
-    const mapSize = 140;
+    const mapSize = 120;
     const mapX = w - mapSize - 10;
     const mapY = 10;
     
-    ctx.globalAlpha = 0.85;
-    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = "rgba(0,0,0,0.8)";
     ctx.fillRect(mapX, mapY, mapSize, mapSize);
-    ctx.strokeStyle = "rgba(230,232,255,0.4)";
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(230,232,255,0.5)";
+    ctx.lineWidth = 1;
     ctx.strokeRect(mapX, mapY, mapSize, mapSize);
     
     if (s.levelData) {
@@ -4545,38 +4722,41 @@ export default function NeonPitRoguelikeV3() {
       const levelH = s.levelData.h || h;
       const scale = mapSize / Math.max(levelW, levelH);
       
-      // Draw rooms
-      ctx.fillStyle = "rgba(46,168,255,0.3)";
+      // Minimal classic minimap - just show room outlines and key points
+      ctx.strokeStyle = "rgba(46,168,255,0.4)";
+      ctx.lineWidth = 1;
+      
+      // Draw room outlines only (minimal)
       for (const room of s.levelData.rooms) {
-        ctx.fillRect(mapX + room.x * scale, mapY + room.y * scale, room.w * scale, room.h * scale);
+        ctx.strokeRect(mapX + room.x * scale, mapY + room.y * scale, room.w * scale, room.h * scale);
       }
       
-      // Draw corridors
-      ctx.fillStyle = "rgba(46,168,255,0.2)";
+      // Draw corridor lines (minimal)
+      ctx.strokeStyle = "rgba(46,168,255,0.25)";
       for (const corr of s.levelData.corridors) {
-        ctx.fillRect(mapX + corr.x * scale, mapY + corr.y * scale, corr.w * scale, corr.h * scale);
+        ctx.strokeRect(mapX + corr.x * scale, mapY + corr.y * scale, corr.w * scale, corr.h * scale);
       }
       
-      // Draw interactables
+      // Draw interactables as small dots
       for (const it of s.interact) {
         if (it.used) continue;
         ctx.fillStyle = it.kind === INTERACT.CHEST ? "#ffd44a" : it.kind === INTERACT.BOSS_TP ? "#ff5d5d" : "#2ea8ff";
         ctx.beginPath();
-        ctx.arc(mapX + it.x * scale, mapY + it.y * scale, 3, 0, Math.PI * 2);
+        ctx.arc(mapX + it.x * scale, mapY + it.y * scale, 2, 0, Math.PI * 2);
         ctx.fill();
       }
       
-      // Draw player
+      // Draw player as small dot
       ctx.fillStyle = "#2ea8ff";
       ctx.beginPath();
-      ctx.arc(mapX + s.player.x * scale, mapY + s.player.y * scale, 4, 0, Math.PI * 2);
+      ctx.arc(mapX + s.player.x * scale, mapY + s.player.y * scale, 3, 0, Math.PI * 2);
       ctx.fill();
       
       // Draw boss if active
       if (s.boss.active) {
         ctx.fillStyle = "#ff5d5d";
         ctx.beginPath();
-        ctx.arc(mapX + s.boss.x * scale, mapY + s.boss.y * scale, 5, 0, Math.PI * 2);
+        ctx.arc(mapX + s.boss.x * scale, mapY + s.boss.y * scale, 3, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -4652,6 +4832,125 @@ export default function NeonPitRoguelikeV3() {
     ctx.font = "bold 14px ui-sans-serif, system-ui";
     ctx.textAlign = "left";
     ctx.fillText(`F${s.floor}`, centerX + 150, topY + 12);
+
+    // Ability hotbar (WoW/League style)
+    if (p.abilityId) {
+      const { h } = s.arena;
+      const hotbarSize = 48;
+      const hotbarX = centerX - hotbarSize / 2;
+      const hotbarY = h - 80; // Bottom of screen
+      const cooldownPercent = p.abilityT > 0 ? Math.min(1, p.abilityT / (p.abilityCd * (p.abilityCdMult || 1))) : 0;
+      const isReady = cooldownPercent === 0;
+      
+      // Background square
+      ctx.fillStyle = isReady ? "rgba(40,60,80,0.9)" : "rgba(80,20,20,0.9)";
+      ctx.fillRect(hotbarX, hotbarY, hotbarSize, hotbarSize);
+      
+      // Border
+      ctx.strokeStyle = isReady ? "#1fe06a" : "#ff5d5d";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(hotbarX, hotbarY, hotbarSize, hotbarSize);
+      
+      // Ability icon (simple shape based on ability)
+      ctx.save();
+      ctx.translate(hotbarX + hotbarSize / 2, hotbarY + hotbarSize / 2);
+      ctx.globalAlpha = isReady ? 1.0 : 0.3;
+      if (p.abilityId === "blink") {
+        // Blink icon - teleport symbol
+        ctx.fillStyle = "#2ea8ff";
+        ctx.beginPath();
+        ctx.arc(0, 0, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(0, -4, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(0, 4, 4, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.abilityId === "roll") {
+        // Roll icon - dash symbol
+        ctx.strokeStyle = "#ffd44a";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(-10, 0);
+        ctx.lineTo(10, 0);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(8, 0, 3, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.abilityId === "slam") {
+        // Slam icon - impact symbol
+        ctx.fillStyle = "#ff7a3d";
+        ctx.beginPath();
+        ctx.arc(0, 0, 14, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 16px ui-sans-serif, system-ui";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("!", 0, 0);
+      }
+      ctx.restore();
+      
+      // Circular cooldown overlay (red tint when on cooldown)
+      if (!isReady) {
+        ctx.save();
+        ctx.translate(hotbarX + hotbarSize / 2, hotbarY + hotbarSize / 2);
+        ctx.rotate(-Math.PI / 2); // Start from top
+        ctx.fillStyle = "rgba(255,0,0,0.6)";
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.arc(0, 0, hotbarSize / 2, 0, Math.PI * 2 * cooldownPercent);
+        ctx.lineTo(0, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+      
+      // Timer text
+      if (!isReady) {
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 14px ui-sans-serif, system-ui";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const timeLeft = (p.abilityCd * (p.abilityCdMult || 1)) - p.abilityT;
+        ctx.fillText(timeLeft.toFixed(1), hotbarX + hotbarSize / 2, hotbarY + hotbarSize / 2);
+      }
+      
+      // Keybind text (bottom)
+      ctx.fillStyle = "rgba(255,255,255,0.7)";
+      ctx.font = "10px ui-sans-serif, system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("SPACE", hotbarX + hotbarSize / 2, hotbarY + hotbarSize + 12);
+    }
+
+    // Boss HP bar (always visible when boss is active)
+    if (s.boss.active && s.boss.maxHp > 0) {
+      const bossBarY = p.abilityId ? topY + 65 : topY + 35;
+      const bossBarW = 300;
+      const bossBarX = centerX - bossBarW / 2;
+      const hpPercent = Math.max(0, Math.min(1, s.boss.hp / s.boss.maxHp));
+      
+      // Background
+      ctx.fillStyle = "rgba(0,0,0,0.7)";
+      ctx.fillRect(bossBarX, bossBarY, bossBarW, 20);
+      
+      // HP bar
+      ctx.fillStyle = hpPercent > 0.5 ? "#1fe06a" : hpPercent > 0.25 ? "#ffd44a" : "#ff5d5d";
+      ctx.fillRect(bossBarX + 2, bossBarY + 2, (bossBarW - 4) * hpPercent, 16);
+      
+      // Border
+      ctx.strokeStyle = "rgba(230,232,255,0.8)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(bossBarX, bossBarY, bossBarW, 20);
+      
+      // Text
+      ctx.fillStyle = "#e6e8ff";
+      ctx.font = "bold 12px ui-sans-serif, system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText(`BOSS: ${Math.round(s.boss.hp)}/${Math.round(s.boss.maxHp)}`, centerX, bossBarY + 13);
+    }
 
     // Draw collected upgrades at the bottom
     const bottomY = s.arena.h - 30;
@@ -4736,6 +5035,99 @@ export default function NeonPitRoguelikeV3() {
     }
 
     if (u.screen === "running") {
+      // Pause menu
+      if (u.pauseMenu) {
+        ctx.fillStyle = "rgba(0,0,0,0.85)";
+        ctx.fillRect(0, 0, w, h);
+        
+        ctx.fillStyle = "#e6e8ff";
+        ctx.font = "bold 24px ui-sans-serif, system-ui";
+        ctx.textAlign = "center";
+        ctx.fillText("PAUSED", w * 0.5, 100);
+        
+        // Menu buttons
+        const buttonY = 180;
+        const buttonH = 50;
+        const buttonSpacing = 70;
+        
+        // Continue button
+        ctx.fillStyle = "rgba(40,60,80,0.9)";
+        ctx.fillRect(w * 0.5 - 120, buttonY, 240, buttonH);
+        ctx.strokeStyle = "#1fe06a";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(w * 0.5 - 120, buttonY, 240, buttonH);
+        ctx.fillStyle = "#1fe06a";
+        ctx.font = "18px ui-sans-serif, system-ui";
+        ctx.fillText("Continue (ESC)", w * 0.5, buttonY + 32);
+        
+        // New Game button
+        ctx.fillStyle = "rgba(40,60,80,0.9)";
+        ctx.fillRect(w * 0.5 - 120, buttonY + buttonSpacing, 240, buttonH);
+        ctx.strokeStyle = "#2ea8ff";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(w * 0.5 - 120, buttonY + buttonSpacing, 240, buttonH);
+        ctx.fillStyle = "#2ea8ff";
+        ctx.fillText("New Game", w * 0.5, buttonY + buttonSpacing + 32);
+        
+        // Admin button
+        ctx.fillStyle = "rgba(40,60,80,0.9)";
+        ctx.fillRect(w * 0.5 - 120, buttonY + buttonSpacing * 2, 240, buttonH);
+        ctx.strokeStyle = "#ffd44a";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(w * 0.5 - 120, buttonY + buttonSpacing * 2, 240, buttonH);
+        ctx.fillStyle = "#ffd44a";
+        ctx.fillText("Admin", w * 0.5, buttonY + buttonSpacing * 2 + 32);
+        
+        // Admin section
+        if (u.showAdmin) {
+          ctx.fillStyle = "rgba(20,30,40,0.95)";
+          ctx.fillRect(w * 0.5 - 200, 100, 400, h - 200);
+          ctx.strokeStyle = "#ffd44a";
+          ctx.lineWidth = 3;
+          ctx.strokeRect(w * 0.5 - 200, 100, 400, h - 200);
+          
+          ctx.fillStyle = "#ffd44a";
+          ctx.font = "bold 20px ui-sans-serif, system-ui";
+          ctx.fillText("ADMIN PANEL", w * 0.5, 140);
+          
+          const adminY = 180;
+          const adminButtonH = 40;
+          const adminSpacing = 50;
+          let adminButtonIndex = 0;
+          
+          // Test functions
+          const adminFunctions = [
+            { name: "Level Up", action: "levelup" },
+            { name: "Spawn Boss", action: "spawnBoss" },
+            { name: "Spawn Chest", action: "spawnChest" },
+            { name: "Spawn Speed Shrine", action: "spawnSpeed" },
+            { name: "Spawn Heal Shrine", action: "spawnHeal" },
+            { name: "Spawn Magnet Shrine", action: "spawnMagnet" },
+            { name: "Full Heal", action: "fullHeal" },
+            { name: "Add 1000 Gold", action: "addGold" },
+            { name: "Add 1000 XP", action: "addXP" },
+            { name: "Kill All Enemies", action: "killAll" },
+            { name: "Close Admin", action: "closeAdmin" },
+          ];
+          
+          for (const func of adminFunctions) {
+            const y = adminY + adminButtonIndex * adminSpacing;
+            ctx.fillStyle = "rgba(60,80,100,0.8)";
+            ctx.fillRect(w * 0.5 - 180, y, 360, adminButtonH);
+            ctx.strokeStyle = "#ffd44a";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(w * 0.5 - 180, y, 360, adminButtonH);
+            ctx.fillStyle = "#e6e8ff";
+            ctx.font = "14px ui-sans-serif, system-ui";
+            ctx.fillText(func.name, w * 0.5, y + 25);
+            adminButtonIndex++;
+          }
+        }
+        
+        ctx.restore();
+        return;
+      }
+      
       if (u.showStats) {
         ctx.fillStyle = "rgba(0,0,0,0.72)";
         ctx.fillRect(0, 0, w, h);
@@ -4918,7 +5310,7 @@ export default function NeonPitRoguelikeV3() {
 
       const cards = content.characters;
       const cardW = Math.min(300, Math.max(220, w * 0.24));
-      const cardH = 120;
+      const cardH = 140;
       const gap = 18;
       const totalW = cardW * 3 + gap * 2;
       const startX = w * 0.5 - totalW * 0.5;
@@ -4946,6 +5338,9 @@ export default function NeonPitRoguelikeV3() {
         ctx.fillText(c.subtitle, 12, 54);
         ctx.fillText(`Start: ${c.startWeapon}`, 12, 76);
         ctx.fillText(`Space: ${c.space.name}`, 12, 98);
+        ctx.fillStyle = active ? "rgba(46,168,255,0.9)" : "rgba(200,220,255,0.85)";
+        ctx.font = "11px ui-sans-serif, system-ui";
+        ctx.fillText(`Perk: ${c.perk}`, 12, 120);
 
         ctx.restore();
       }
@@ -4960,6 +5355,60 @@ export default function NeonPitRoguelikeV3() {
       }
       ctx.restore();
       return;
+    }
+  }
+
+  function handleAdminAction(s, action) {
+    if (!s || !s.running) return;
+    const p = s.player;
+    
+    switch (action) {
+      case "levelup":
+        // Trigger level up
+        s.xp = s.xpNeed;
+        break;
+      case "spawnBoss":
+        // Spawn boss at player location
+        if (!s.boss.active) {
+          startBoss(s, 120, p.x, p.y);
+        }
+        break;
+      case "spawnChest":
+        spawnInteractable(s, INTERACT.CHEST);
+        break;
+      case "spawnSpeed":
+        spawnInteractable(s, INTERACT.SHRINE);
+        break;
+      case "spawnHeal":
+        spawnInteractable(s, INTERACT.MICROWAVE);
+        break;
+      case "spawnMagnet":
+        spawnInteractable(s, INTERACT.MAGNET_SHRINE);
+        break;
+      case "fullHeal":
+        p.hp = p.maxHp;
+        p.shield = p.maxShield || 0;
+        pushCombatText(s, p.x, p.y - 30, "FULL HEAL", "#1fe06a", { size: 16, life: 1.2 });
+        break;
+      case "addGold":
+        p.coins += 1000;
+        s.score += 1000 * 3;
+        pushCombatText(s, p.x, p.y - 30, "+1000 Gold", "#ffd44a", { size: 16, life: 1.2 });
+        break;
+      case "addXP":
+        s.xp += 1000;
+        pushCombatText(s, p.x, p.y - 30, "+1000 XP", "#2ea8ff", { size: 16, life: 1.2 });
+        break;
+      case "killAll":
+        // Kill all enemies
+        for (const e of s.enemies) {
+          if (e.hp > 0) {
+            e.hp = 0;
+            addParticle(s, e.x, e.y, 12, 200, { size: 2.5, speed: 1.2 });
+          }
+        }
+        pushCombatText(s, p.x, p.y - 30, "ALL ENEMIES KILLED", "#ff5d5d", { size: 16, life: 1.2 });
+        break;
     }
   }
 
@@ -5115,11 +5564,11 @@ export default function NeonPitRoguelikeV3() {
         if (currentIndex >= 0) {
           let newIndex;
           if (k === "a" || k === "A") {
-            // Previous character
-            newIndex = currentIndex > 0 ? currentIndex - 1 : content.characters.length - 1;
-          } else {
-            // Next character
+            // Next character (move right)
             newIndex = currentIndex < content.characters.length - 1 ? currentIndex + 1 : 0;
+          } else {
+            // Previous character (move left)
+            newIndex = currentIndex > 0 ? currentIndex - 1 : content.characters.length - 1;
           }
           setMenuChar(content.characters[newIndex].id);
         }
@@ -5140,18 +5589,43 @@ export default function NeonPitRoguelikeV3() {
 
       if (k === "Escape") {
         const u = uiRef.current;
-        if (u.screen === "running" && u.showStats) setPaused(false);
+        if (u.screen === "running") {
+          if (u.showStats && !u.pauseMenu) {
+            // Close stats, open pause menu
+            setUi(prev => ({ ...prev, showStats: false, pauseMenu: true }));
+          } else if (u.pauseMenu) {
+            // Close pause menu, resume game
+            setUi(prev => ({ ...prev, pauseMenu: false, showAdmin: false }));
+          } else {
+            // Open pause menu
+            setUi(prev => ({ ...prev, pauseMenu: true }));
+          }
+        }
       }
 
       if (uikIsLevelupGuard()) {
         return;
       }
 
-      keysRef.current.add(k);
+      // Normalize letter keys to lowercase to handle Shift properly
+      // Arrow keys are kept as-is
+      if (k && k.length === 1 && /[a-zA-Z]/.test(k)) {
+        keysRef.current.add(k.toLowerCase());
+      } else {
+        keysRef.current.add(k);
+      }
     };
 
     const up = (e) => {
-      keysRef.current.delete(e.key);
+      const k = e.key;
+      
+      // Normalize letter keys to lowercase (same as keydown)
+      if (k && k.length === 1 && /[a-zA-Z]/.test(k)) {
+        keysRef.current.delete(k.toLowerCase());
+        keysRef.current.delete(k.toUpperCase()); // Also remove uppercase version if it exists
+      } else {
+        keysRef.current.delete(k);
+      }
     };
 
     const blur = () => {
@@ -5188,6 +5662,12 @@ export default function NeonPitRoguelikeV3() {
 
       const s = stateRef.current;
       const u = uiRef.current;
+      
+      // Pause game updates when pause menu is open
+      if (u.screen === "running" && u.pauseMenu) {
+        return;
+      }
+      
       if (!s) {
         if (u.screen === "menu") {
           const rect = c.getBoundingClientRect();
@@ -5210,6 +5690,76 @@ export default function NeonPitRoguelikeV3() {
           }
         }
         return;
+      }
+
+      // Pause menu click handling
+      if (u.screen === "running" && u.pauseMenu) {
+        const rect = c.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const w = s.arena.w;
+        const h = s.arena.h;
+        
+        const buttonX = w * 0.5 - 120;
+        const buttonW = 240;
+        const buttonH = 50;
+        const buttonY = 180;
+        const buttonSpacing = 70;
+        
+        // Continue button
+        if (x >= buttonX && x <= buttonX + buttonW && y >= buttonY && y <= buttonY + buttonH) {
+          setUi(prev => ({ ...prev, pauseMenu: false, showAdmin: false }));
+          return;
+        }
+        
+        // New Game button
+        if (x >= buttonX && x <= buttonX + buttonW && y >= buttonY + buttonSpacing && y <= buttonY + buttonSpacing + buttonH) {
+          ensureAudio();
+          const best = safeBest();
+          newRun(best, u.selectedChar);
+          setUi(prev => ({ ...prev, pauseMenu: false, showAdmin: false }));
+          return;
+        }
+        
+        // Admin button
+        if (x >= buttonX && x <= buttonX + buttonW && y >= buttonY + buttonSpacing * 2 && y <= buttonY + buttonSpacing * 2 + buttonH) {
+          setUi(prev => ({ ...prev, showAdmin: !prev.showAdmin }));
+          return;
+        }
+        
+        // Admin section buttons
+        if (u.showAdmin) {
+          const adminX = w * 0.5 - 180;
+          const adminW = 360;
+          const adminButtonH = 40;
+          const adminY = 180;
+          const adminSpacing = 50;
+          
+          const adminFunctions = [
+            { name: "Level Up", action: "levelup" },
+            { name: "Spawn Boss", action: "spawnBoss" },
+            { name: "Spawn Chest", action: "spawnChest" },
+            { name: "Spawn Speed Shrine", action: "spawnSpeed" },
+            { name: "Spawn Heal Shrine", action: "spawnHeal" },
+            { name: "Spawn Magnet Shrine", action: "spawnMagnet" },
+            { name: "Full Heal", action: "fullHeal" },
+            { name: "Add 1000 Gold", action: "addGold" },
+            { name: "Add 1000 XP", action: "addXP" },
+            { name: "Kill All Enemies", action: "killAll" },
+            { name: "Close Admin", action: "closeAdmin" },
+          ];
+          
+          for (let i = 0; i < adminFunctions.length; i++) {
+            const adminButtonY = adminY + i * adminSpacing;
+            if (x >= adminX && x <= adminX + adminW && y >= adminButtonY && y <= adminButtonY + adminButtonH) {
+              handleAdminAction(s, adminFunctions[i].action);
+              if (adminFunctions[i].action === "closeAdmin") {
+                setUi(prev => ({ ...prev, showAdmin: false }));
+              }
+              return;
+            }
+          }
+        }
       }
 
       if (u.screen === "levelup") {
@@ -5270,7 +5820,7 @@ export default function NeonPitRoguelikeV3() {
 
       if (s) {
         const u = uiRef.current;
-        if (u.screen === "running" && s.running) {
+        if (u.screen === "running" && s.running && !u.pauseMenu) {
           // Always update hitStopT, but only update game logic when hitStopT is 0
           if (s.hitStopT > 0) {
             s.hitStopT = Math.max(0, s.hitStopT - dt);
@@ -5290,7 +5840,7 @@ export default function NeonPitRoguelikeV3() {
         drawHud(s, ctx);
 
         const u2 = uiRef.current;
-        if (u2.screen === "running") {
+        if (u2.screen === "running" && !u2.pauseMenu) {
           u2.score = s.score;
           u2.level = s.level;
           u2.xp = s.xp;
