@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { clamp, lerp, rand, dist2, format } from "./src/utils/math.js";
-import { hexToRgb, lerpColor, adjustBrightness } from "./src/utils/color.js";
-import { deepClone, pickWeighted } from "./src/utils/data.js";
-import { getVisualRadius, resolveKinematicOverlap, resolveDynamicOverlap } from "./src/game/systems/CollisionSystem.js";
-import { isPointWalkable, findNearestWalkable, hasLineOfSight, circleOverlapsRect } from "./src/game/world/WalkabilitySystem.js";
-import { generateFlowField, getFlowDirection } from "./src/game/systems/PathfindingSystem.js";
-import { BSPNode, generateBSPDungeon, convertBSPToGrid, generateWallInfluenceMap } from "./src/game/world/BSPDungeonGenerator.js";
-import { generateProceduralLevel } from "./src/game/world/LevelGenerator.js";
+import { clamp, lerp, rand, dist2, format } from "../utils/math.js";
+import { hexToRgb, lerpColor, adjustBrightness } from "../utils/color.js";
+import { deepClone, pickWeighted } from "../utils/data.js";
+import { getVisualRadius, resolveKinematicOverlap, resolveDynamicOverlap } from "../game/systems/CollisionSystem.js";
+import { isPointWalkable, findNearestWalkable, hasLineOfSight, circleOverlapsRect } from "../game/world/WalkabilitySystem.js";
+import { generateFlowField, getFlowDirection } from "../game/systems/PathfindingSystem.js";
+import { BSPNode, generateBSPDungeon, convertBSPToGrid, generateWallInfluenceMap } from "../game/world/BSPDungeonGenerator.js";
+import { generateProceduralLevel } from "../game/world/LevelGenerator.js";
 
 // Aliases for backward compatibility
 const getVisualCubeRadius = getVisualRadius;
@@ -34,12 +34,12 @@ const resolveDynamicCircleOverlap = resolveDynamicOverlap;
 // ISOMETRIC TRANSFORMATION FUNCTIONS
 // ============================================================================
 
-import { ISO_MODE } from "./src/data/constants.js";
-import { worldToIso, isoToWorld, getIsoDepth, transformInputForIsometric, drawIsometricCube, drawEntityAsCube, drawIsometricRectangle } from "./src/rendering/IsometricRenderer.js";
+import { ISO_MODE } from "../data/constants.js";
+import { worldToIso, isoToWorld, getIsoDepth, transformInputForIsometric, drawIsometricCube, drawEntityAsCube, drawIsometricRectangle } from "../rendering/IsometricRenderer.js";
 
 
 
-import { RARITY, RARITY_COLOR, TYPE, INTERACT } from "./src/data/constants.js";
+import { RARITY, RARITY_COLOR, TYPE, INTERACT } from "../data/constants.js";
 
 function xpToNext(level) {
   return Math.round(16 + level * 8 + Math.pow(level, 1.35) * 4);
