@@ -47,12 +47,50 @@ function deepClone(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
 
-function resolveKinematicCircleOverlap(kin, dyn, bounds) {
+// Calculate the visual cube's effective collision radius to match what's actually drawn
+// The cube is drawn with specific multipliers that make it smaller than the base radius
+function getVisualCubeRadius(entityRadius) {
+  // From drawIsometricCube:
+  // - baseMultiplier = 45
+  // - isoScale = 0.01 (default)
+  // - halfW = cubeSize * 0.4
+  // - cubeSize = size * 45 * 0.01 = size * 0.45 (screen pixels)
+  // - halfW = size * 0.45 * 0.4 = size * 0.18 (screen pixels)
+  // 
+  // The cube's bounding box in screen space: width = halfW * 2 = size * 0.36
+  // To convert screen space back to world space for isometric:
+  // World radius ≈ screen half-width / (ISO_TILE_WIDTH/2 * isoScale)
+  // = (size * 0.18) / (64/2 * 0.01) = (size * 0.18) / 0.32 = size * 0.5625
+  // 
+  // However, the visual cube appears smaller than the base radius, so we scale down
+  // Using the actual visual extent: the cube's effective radius matches its visual size
+  const isoScale = 0.01;
+  const ISO_TILE_WIDTH = 64;
+  const baseMultiplier = 45;
+  const halfWMultiplier = 0.4;
+  
+  // For collision detection, we want the visual radius to match the cube size
+  // Use 80% of original radius for all entities - this was working well for bounding box
+  const visualR = entityRadius * 0.4;
+  // #region agent log
+  if (entityRadius <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getVisualCubeRadius:result',message:'Visual radius calculated',data:{entityRadius,visualR,percentage:(visualR/entityRadius*100).toFixed(1),multiplier:0.4},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H1'})}).catch(()=>{});
+  // #endregion
+  return visualR;
+}
+
+function resolveKinematicCircleOverlap(kin, dyn, bounds, levelData = null) {
   // Default: enemies can ALWAYS hit you when in contact
   // Only exception: at the absolute peak of a very high jump
   
+  // #region agent log
+  if (dyn.r <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'resolveKinematicCircleOverlap:entry',message:'Function entry for small enemy',data:{enemyR:dyn.r,playerR:kin.r||14,playerZ:kin.z||0,jumpLandingGrace:kin.jumpLandingGrace},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H2'})}).catch(()=>{});
+  // #endregion
+  
   // Landing grace period prevents immediate collision after landing
   if (kin.jumpLandingGrace !== undefined && kin.jumpLandingGrace > 0) {
+    // #region agent log
+    if (dyn.r <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'resolveKinematicCircleOverlap:grace_period',message:'Early return due to grace period',data:{enemyR:dyn.r,jumpLandingGrace:kin.jumpLandingGrace},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H2'})}).catch(()=>{});
+    // #endregion
     return false; // Grace period after landing
   }
   
@@ -63,6 +101,9 @@ function resolveKinematicCircleOverlap(kin, dyn, bounds) {
     // With baseJumpV = 160, max height is ~16, so z > 8 covers most of the jump arc
     if (kin.z > 8) {
       // High enough to clear enemies - safe
+      // #region agent log
+      if (dyn.r <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'resolveKinematicCircleOverlap:high_jump',message:'Early return due to high jump',data:{enemyR:dyn.r,playerZ:kin.z},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H2'})}).catch(()=>{});
+      // #endregion
       return false; // High enough to jump over enemies safely
     }
     // Low jump (z <= 8) - vulnerable (spam jump territory)
@@ -73,25 +114,72 @@ function resolveKinematicCircleOverlap(kin, dyn, bounds) {
   const dx = kin.x - dyn.x;
   const dy = kin.y - dyn.y;
   const d = Math.hypot(dx, dy);
-  const minD = kin.r + dyn.r;
-  if (!(d < minD)) return false;
+  // Use visual cube radius for collision to match what's actually drawn
+  const kinVisualR = getVisualCubeRadius(kin.r || 14);
+  const dynVisualR = getVisualCubeRadius(dyn.r || 14);
+  const minD = kinVisualR + dynVisualR;
+  // #region agent log
+  if (dyn.r <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'resolveKinematicCircleOverlap:check',message:'Collision check for small enemy',data:{kinR:kin.r||14,kinVisualR,dynR:dyn.r,dynVisualR,dist:d,minDist:minD,overlaps:d<minD,playerZ:kin.z||0,distDiff:(d-minD).toFixed(3)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H1'})}).catch(()=>{});
+  // #endregion
+  if (!(d < minD)) {
+    // #region agent log
+    if (dyn.r <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'resolveKinematicCircleOverlap:no_overlap',message:'No overlap detected - returning false',data:{enemyR:dyn.r,dist:d,minDist:minD,distDiff:(d-minD).toFixed(3),tooFar:d>=minD},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H1'})}).catch(()=>{});
+    // #endregion
+    return false;
+  }
 
   const nx = d > 0.0001 ? dx / d : 1;
   const ny = d > 0.0001 ? dy / d : 0;
   const overlap = minD - d;
 
-  kin.x += nx * (overlap + 0.01);
-  kin.y += ny * (overlap + 0.01);
+  // Store original position
+  const oldX = kin.x;
+  const oldY = kin.y;
+  const playerRadius = kin.r || 12;
+
+  // Try to move player away from enemy
+  const testX = kin.x + nx * (overlap + 0.01);
+  const testY = kin.y + ny * (overlap + 0.01);
+  
+  // Check if new position is walkable (prevents being pushed through walls)
+  if (levelData) {
+    if (isPointWalkable(testX, testY, levelData, playerRadius)) {
+      kin.x = testX;
+      kin.y = testY;
+    } else {
+      // Can't move away, try X-only or Y-only
+      if (isPointWalkable(testX, kin.y, levelData, playerRadius)) {
+        kin.x = testX;
+      } else if (isPointWalkable(kin.x, testY, levelData, playerRadius)) {
+        kin.y = testY;
+      }
+      // If still can't move, stay in place (enemy will be pushed instead)
+    }
+  } else {
+    // No level data, allow movement
+    kin.x = testX;
+    kin.y = testY;
+  }
 
   dyn.x -= nx * (overlap * 0.2);
   dyn.y -= ny * (overlap * 0.2);
-
-  if (bounds) {
-    kin.x = clamp(kin.x, bounds.padding, bounds.w - bounds.padding);
-    kin.y = clamp(kin.y, bounds.padding, bounds.h - bounds.padding);
-    dyn.x = clamp(dyn.x, bounds.padding, bounds.w - bounds.padding);
-    dyn.y = clamp(dyn.y, bounds.padding, bounds.h - bounds.padding);
+  
+  // Final check: ensure player is still walkable
+  if (levelData && !isPointWalkable(kin.x, kin.y, levelData, playerRadius)) {
+    const walkable = findNearestWalkable(kin.x, kin.y, levelData, playerRadius);
+    kin.x = walkable.x;
+    kin.y = walkable.y;
   }
+  
+  // #region agent log
+  if (dyn.r <= 15) {
+    const finalDx = kin.x - dyn.x;
+    const finalDy = kin.y - dyn.y;
+    const finalD = Math.hypot(finalDx, finalDy);
+    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'resolveKinematicCircleOverlap:return_true',message:'Overlap detected - returning true',data:{enemyR:dyn.r,initialDist:d.toFixed(3),finalDist:finalD.toFixed(3),overlap:overlap.toFixed(3),minDist:minD.toFixed(3)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H1'})}).catch(()=>{});
+  }
+  // #endregion
+  
   return true;
 }
 
@@ -111,167 +199,453 @@ function resolveDynamicCircleOverlap(a, b, bounds) {
   b.x -= nx * (overlap * 0.5);
   b.y -= ny * (overlap * 0.5);
 
-  if (bounds) {
-    a.x = clamp(a.x, bounds.padding, bounds.w - bounds.padding);
-    a.y = clamp(a.y, bounds.padding, bounds.h - bounds.padding);
-    b.x = clamp(b.x, bounds.padding, bounds.w - bounds.padding);
-    b.y = clamp(b.y, bounds.padding, bounds.h - bounds.padding);
-  }
+  // Bounds clamping removed - enemies can move freely within walkable areas
+  // Collision detection will handle boundaries naturally
   return true;
 }
 
+// BSP Node class for dungeon generation
+class BSPNode {
+  constructor(x, y, width, height) {
+    this.x = x;
+    this.y = y;
+    this.width = width;
+    this.height = height;
+    this.left = null;
+    this.right = null;
+    this.room = null;
+    this.corridor = null;
+  }
+  
+  isLeaf() {
+    return this.left === null && this.right === null;
+  }
+}
+
+// Get room from node (recursively finds room in leaf)
+function getRoomFromNode(node) {
+  if (!node) return null;
+  if (node.isLeaf()) {
+    return node.room;
+  }
+  // Get room from any descendant
+  return getRoomFromNode(node.left) || getRoomFromNode(node.right);
+}
+
+// Recursively split BSP node
+function splitBSPNode(node, minRoomSize, minSplitSize, depth = 0, maxDepth = 4) {
+  // Limit recursion depth to maxDepth (default 4, resulting in 8-16 rooms)
+  if (depth >= maxDepth) {
+    return;
+  }
+  
+  // Don't split if too small
+  if (node.width < minSplitSize * 2 || node.height < minSplitSize * 2) {
+    return;
+  }
+  
+  // Decide split direction (prefer splitting longer dimension)
+  const splitHorizontally = node.width > node.height;
+  
+  if (splitHorizontally) {
+    // Split vertically (divide width)
+    const minSplit = minRoomSize;
+    const maxSplit = node.width - minRoomSize;
+    if (maxSplit <= minSplit) return; // Can't split
+    
+    const splitX = minSplit + Math.random() * (maxSplit - minSplit);
+    node.left = new BSPNode(node.x, node.y, splitX, node.height);
+    node.right = new BSPNode(node.x + splitX, node.y, node.width - splitX, node.height);
+  } else {
+    // Split horizontally (divide height)
+    const minSplit = minRoomSize;
+    const maxSplit = node.height - minRoomSize;
+    if (maxSplit <= minSplit) return; // Can't split
+    
+    const splitY = minSplit + Math.random() * (maxSplit - minSplit);
+    node.left = new BSPNode(node.x, node.y, node.width, splitY);
+    node.right = new BSPNode(node.x, node.y + splitY, node.width, node.height - splitY);
+  }
+  
+  // Recursively split children with increased depth
+  splitBSPNode(node.left, minRoomSize, minSplitSize, depth + 1, maxDepth);
+  splitBSPNode(node.right, minRoomSize, minSplitSize, depth + 1, maxDepth);
+}
+
+// Create rooms in leaf nodes
+function createRoomsInBSP(node, minRoomSize, padding) {
+  if (node.isLeaf()) {
+    // Mandatory padding = 2 tiles (20px with gridSize=10) on all sides
+    // This ensures rooms never touch and always have at least 4 tiles of wall space between them
+    const mandatoryPadding = padding; // padding should be 20px (2 tiles * 10px)
+    const availableW = node.width - mandatoryPadding * 2;
+    const availableH = node.height - mandatoryPadding * 2;
+    
+    if (availableW < minRoomSize || availableH < minRoomSize) {
+      // Node too small, create minimal room (still with mandatory padding)
+      node.room = {
+        x: node.x + mandatoryPadding,
+        y: node.y + mandatoryPadding,
+        w: Math.max(minRoomSize * 0.5, availableW),
+        h: Math.max(minRoomSize * 0.5, availableH)
+      };
+      return;
+    }
+    
+    // Create room in leaf node with mandatory padding enforced
+    // Make rooms larger - use 70-90% of available space for better horde gameplay
+    const roomW = Math.max(minRoomSize, availableW * (0.7 + Math.random() * 0.2));
+    const roomH = Math.max(minRoomSize, availableH * (0.7 + Math.random() * 0.2));
+    const roomX = node.x + mandatoryPadding + Math.random() * Math.max(0, availableW - roomW);
+    const roomY = node.y + mandatoryPadding + Math.random() * Math.max(0, availableH - roomH);
+    
+    node.room = {
+      x: Math.max(node.x + mandatoryPadding, Math.min(roomX, node.x + node.width - roomW - mandatoryPadding)),
+      y: Math.max(node.y + mandatoryPadding, Math.min(roomY, node.y + node.height - roomH - mandatoryPadding)),
+      w: Math.min(roomW, availableW),
+      h: Math.min(roomH, availableH)
+    };
+  } else {
+    createRoomsInBSP(node.left, minRoomSize, padding);
+    createRoomsInBSP(node.right, minRoomSize, padding);
+  }
+}
+
+// Create L-shaped corridors connecting sibling rooms
+// Recursively connects siblings from leaves all the way up to root to ensure no isolated rooms
+function createCorridorsInBSP(node) {
+  if (node.isLeaf()) {
+    return; // Leaf nodes have no siblings to connect
+  }
+  
+  // Recursively create corridors in children FIRST (bottom-up approach)
+  // This ensures all child connections are made before parent connections
+  createCorridorsInBSP(node.left);
+  createCorridorsInBSP(node.right);
+  
+  // Get rooms from left and right subtrees
+  const leftRoom = getRoomFromNode(node.left);
+  const rightRoom = getRoomFromNode(node.right);
+  
+  if (!leftRoom || !rightRoom) return;
+  
+  // Create L-shaped corridor connecting the two rooms
+  const leftCenterX = leftRoom.x + leftRoom.w / 2;
+  const leftCenterY = leftRoom.y + leftRoom.h / 2;
+  const rightCenterX = rightRoom.x + rightRoom.w / 2;
+  const rightCenterY = rightRoom.y + rightRoom.h / 2;
+  
+  // 5-tile wide corridors (5 * 10px gridSize = 50px) for better player movement
+  const corridorW = 50; // Fixed 5-tile wide corridors for horde gameplay
+  
+  // Ensure corridors extend INTO rooms for guaranteed connectivity
+  // Use room centers but extend corridors well into both rooms to avoid invisible walls
+  const extendIntoRoom = 40; // Extend 40px into each room to guarantee connection
+  
+  // Create L-shaped corridor: horizontal then vertical, or vertical then horizontal
+  let corridor1, corridor2;
+  
+  if (Math.random() < 0.5) {
+    // Horizontal first, then vertical
+    const midX = (leftCenterX + rightCenterX) / 2;
+    // Horizontal segment: from left room center to midX, extending into both rooms
+    corridor1 = {
+      x: Math.min(leftCenterX - extendIntoRoom, midX - corridorW / 2),
+      y: leftCenterY - corridorW / 2,
+      w: Math.abs(midX - (leftCenterX - extendIntoRoom)) + corridorW + extendIntoRoom,
+      h: corridorW
+    };
+    // Vertical segment: from midX to right room center, extending into both rooms
+    corridor2 = {
+      x: midX - corridorW / 2,
+      y: Math.min(leftCenterY, rightCenterY) - corridorW / 2,
+      w: corridorW,
+      h: Math.abs(rightCenterY - leftCenterY) + corridorW + extendIntoRoom * 2
+    };
+  } else {
+    // Vertical first, then horizontal
+    const midY = (leftCenterY + rightCenterY) / 2;
+    // Vertical segment: from left room center to midY, extending into both rooms
+    corridor1 = {
+      x: leftCenterX - corridorW / 2,
+      y: Math.min(leftCenterY - extendIntoRoom, midY - corridorW / 2),
+      w: corridorW,
+      h: Math.abs(midY - (leftCenterY - extendIntoRoom)) + corridorW + extendIntoRoom
+    };
+    // Horizontal segment: from midY to right room center, extending into both rooms
+    corridor2 = {
+      x: Math.min(leftCenterX, rightCenterX) - corridorW / 2,
+      y: midY - corridorW / 2,
+      w: Math.abs(rightCenterX - leftCenterX) + corridorW + extendIntoRoom * 2,
+      h: corridorW
+    };
+  }
+  
+  // Ensure corridors extend WELL into both rooms to prevent invisible walls
+  // Use generous overlap to guarantee connectivity
+  const roomOverlap = 60; // Overlap 60px into each room (more than corridor width)
+  
+  // Horizontal corridors should reach deep into both rooms
+  if (corridor1.h === corridorW) {
+    // Horizontal corridor - extend deep into both rooms
+    corridor1.x = Math.min(corridor1.x, leftRoom.x - roomOverlap);
+    const rightEdge = Math.max(corridor1.x + corridor1.w, rightRoom.x + rightRoom.w + roomOverlap);
+    corridor1.w = rightEdge - corridor1.x;
+  }
+  if (corridor2.h === corridorW) {
+    // Horizontal corridor - extend deep into both rooms
+    corridor2.x = Math.min(corridor2.x, leftRoom.x - roomOverlap);
+    const rightEdge = Math.max(corridor2.x + corridor2.w, rightRoom.x + rightRoom.w + roomOverlap);
+    corridor2.w = rightEdge - corridor2.x;
+  }
+  
+  // Vertical corridors should reach deep into both rooms
+  if (corridor1.w === corridorW) {
+    // Vertical corridor - extend deep into both rooms
+    corridor1.y = Math.min(corridor1.y, leftRoom.y - roomOverlap);
+    const bottomEdge = Math.max(corridor1.y + corridor1.h, rightRoom.y + rightRoom.h + roomOverlap);
+    corridor1.h = bottomEdge - corridor1.y;
+  }
+  if (corridor2.w === corridorW) {
+    // Vertical corridor - extend deep into both rooms
+    corridor2.y = Math.min(corridor2.y, leftRoom.y - roomOverlap);
+    const bottomEdge = Math.max(corridor2.y + corridor2.h, rightRoom.y + rightRoom.h + roomOverlap);
+    corridor2.h = bottomEdge - corridor2.y;
+  }
+  
+  node.corridor = [corridor1, corridor2];
+}
+
+// Collect all rooms and corridors from BSP tree
+function collectBSPRoomsAndCorridors(node, rooms, corridors) {
+  if (node.isLeaf()) {
+    if (node.room) {
+      rooms.push(node.room);
+    }
+  } else {
+    collectBSPRoomsAndCorridors(node.left, rooms, corridors);
+    collectBSPRoomsAndCorridors(node.right, rooms, corridors);
+    
+    if (node.corridor) {
+      corridors.push(...node.corridor);
+    }
+  }
+}
+
+// Generate wall influence map - assigns higher cost to tiles adjacent to walls
+// This encourages paths through the center of corridors
+function generateWallInfluenceMap(grid) {
+  if (!grid || !Array.isArray(grid) || grid.length === 0) return null;
+  if (!grid[0] || !Array.isArray(grid[0]) || grid[0].length === 0) return null;
+  
+  const gridH = grid.length;
+  const gridW = grid[0].length;
+  const influenceMap = [];
+  
+  // Initialize influence map
+  for (let y = 0; y < gridH; y++) {
+    influenceMap[y] = [];
+    for (let x = 0; x < gridW; x++) {
+      influenceMap[y][x] = 0; // Base cost
+    }
+  }
+  
+  // Check each floor tile for adjacent walls
+  for (let y = 0; y < gridH; y++) {
+    for (let x = 0; x < gridW; x++) {
+      if (grid[y][x] === 1) { // Only check floor tiles
+        let wallCount = 0;
+        
+        // Check all 8 neighbors for walls
+        const checkDirs = [
+          [-1, -1], [0, -1], [1, -1],
+          [-1,  0],          [1,  0],
+          [-1,  1], [0,  1], [1,  1]
+        ];
+        
+        for (const [dx, dy] of checkDirs) {
+          const nx = x + dx;
+          const ny = y + dy;
+          
+          // Check bounds
+          if (ny < 0 || ny >= gridH || nx < 0 || nx >= gridW) {
+            wallCount++; // Out of bounds counts as wall
+          } else if (grid[ny][nx] === 0) {
+            wallCount++; // Adjacent wall
+          }
+        }
+        
+        // Assign influence cost based on number of adjacent walls
+        // More walls = higher cost (encourages center paths)
+        // Cost ranges from 0 (no walls) to 0.5 (surrounded by walls)
+        influenceMap[y][x] = (wallCount / 8) * 0.5;
+      }
+    }
+  }
+  
+  return influenceMap;
+}
+
+// Convert BSP rooms and corridors to 2D grid
+function convertBSPToGrid(rooms, corridors, width, height, gridSize = 10) {
+  const gridW = Math.ceil(width / gridSize);
+  const gridH = Math.ceil(height / gridSize);
+  const grid = [];
+  
+  // Initialize grid with 0 (void/wall)
+  for (let y = 0; y < gridH; y++) {
+    grid[y] = [];
+    for (let x = 0; x < gridW; x++) {
+      grid[y][x] = 0; // 0 = void/wall
+    }
+  }
+  
+  // Mark rooms as floor (1)
+  // Use exact room coordinates to match visual rendering
+  for (const room of rooms) {
+    const startX = Math.floor(room.x / gridSize);
+    const startY = Math.floor(room.y / gridSize);
+    const endX = Math.ceil((room.x + room.w) / gridSize);
+    const endY = Math.ceil((room.y + room.h) / gridSize);
+    
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'convertBSPToGrid:room_marking',message:'Marking room in grid',data:{roomX:room.x,roomY:room.y,roomW:room.w,roomH:room.h,startX,startY,endX,endY,gridSize,worldBounds:`${room.x},${room.y} to ${room.x+room.w},${room.y+room.h}`,gridBounds:`cell ${startX},${startY} to ${endX},${endY}`},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    
+    // Mark all cells within room bounds (exact match to visual)
+    for (let y = startY; y < endY && y < gridH; y++) {
+      for (let x = startX; x < endX && x < gridW; x++) {
+        if (x >= 0 && y >= 0) {
+          grid[y][x] = 1; // 1 = floor
+          // #region agent log
+          if (x === startX && y === startY) {
+            const cellWorldX = x * gridSize;
+            const cellWorldY = y * gridSize;
+            fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'convertBSPToGrid:cell_marked',message:'First cell of room marked',data:{cellX:x,cellY:y,cellWorldX,cellWorldY,roomX:room.x,roomY:room.y,offsetX:room.x-cellWorldX,offsetY:room.y-cellWorldY},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+          }
+          // #endregion
+        }
+      }
+    }
+  }
+  
+  // Mark corridors as floor (1) - corridors are 50px wide (5 tiles * 10px)
+  // Use exact corridor coordinates to match visual rendering
+  for (const corridor of corridors) {
+    const startX = Math.floor(corridor.x / gridSize);
+    const startY = Math.floor(corridor.y / gridSize);
+    const endX = Math.ceil((corridor.x + corridor.w) / gridSize);
+    const endY = Math.ceil((corridor.y + corridor.h) / gridSize);
+    
+    // Mark corridor area using exact coordinates (matches visual)
+    for (let y = startY; y < endY && y < gridH; y++) {
+      for (let x = startX; x < endX && x < gridW; x++) {
+        if (x >= 0 && y >= 0) {
+          grid[y][x] = 1; // 1 = floor
+        }
+      }
+    }
+  }
+  
+  // Generate wall influence map
+  const wallInfluence = generateWallInfluenceMap(grid);
+  
+  return { grid, wallInfluence };
+}
+
+// Generate BSP dungeon
+function generateBSPDungeon(width, height, minRoomSize, maxDepth = 4) {
+  // Create root node
+  const root = new BSPNode(0, 0, width, height);
+  
+  // Split recursively with depth limit (maxDepth = 4 results in 8-16 rooms)
+  const minSplitSize = minRoomSize * 1.5; // Minimum size to continue splitting
+  splitBSPNode(root, minRoomSize, minSplitSize, 0, maxDepth);
+  
+  // Create rooms in leaf nodes with mandatory padding = 2 tiles (20px)
+  const padding = 20; // 2 tiles * 10px gridSize = 20px mandatory padding
+  createRoomsInBSP(root, minRoomSize, padding);
+  
+  // Create corridors (recursively connects siblings from leaves to root)
+  createCorridorsInBSP(root);
+  
+  // Collect rooms and corridors
+  const rooms = [];
+  const corridors = [];
+  collectBSPRoomsAndCorridors(root, rooms, corridors);
+  
+  // Convert to grid
+  const gridResult = convertBSPToGrid(rooms, corridors, width, height, 10);
+  
+  return {
+    grid: gridResult.grid,
+    wallInfluence: gridResult.wallInfluence || null,
+    rooms,
+    corridors,
+    bspTree: root
+  };
+}
+
 function generateProceduralLevel(w, h, floor) {
-  // Larger, more open map with some structure
-  // Make the level significantly larger than screen
-  // Fixed size for all floors for consistent gameplay
-  const scaleFactor = 4.0; // Fixed 4x screen size for all floors
-  const levelW = w * scaleFactor;
-  const levelH = h * scaleFactor;
+  // Use BSP algorithm for better structured dungeon generation
+  // Larger maps for slower-paced gameplay: ~140 tiles
+  const gridSize = 10; // Grid cell size
+  const targetTiles = 140; // Target ~140 tiles (larger maps for slower gameplay)
+  const levelW = targetTiles * gridSize; // 1400px (140 tiles * 10px)
+  const levelH = targetTiles * gridSize; // 1400px (140 tiles * 10px)
   const padding = 50;
   
   // Determine biome based on floor
   const biomeTypes = ["grassland", "desert", "winter", "forest", "volcanic"];
   const biome = biomeTypes[(floor - 1) % biomeTypes.length];
   
-  // Create a few large open rooms connected by wide corridors
+  // BSP Dungeon Generation Parameters
+  // Minimum room size: at least 20x20 tiles (200px) for horde gameplay with player (r=14) and enemies
+  const minRoomSize = 200; // 20 tiles * 10px = 200px minimum room size
+  const maxDepth = 4; // Limit recursion to 4 levels (results in 8-16 rooms)
+  
+  // Generate BSP dungeon
+  const bspResult = generateBSPDungeon(levelW, levelH, minRoomSize, maxDepth);
+  
+  // Extract rooms and corridors from BSP
   const rooms = [];
   const corridors = [];
-  const walkableAreas = [];
   const obstacles = []; // Visual-only obstacles (don't block movement)
   const grass = []; // Grass patches for visual variety
   const rocks = []; // Rock decorations
   const water = []; // Water features (visual only)
   
-  // Generate 3-5 large open rooms
-  const numRooms = 3 + Math.floor(Math.random() * 3); // 3-5 rooms
-  const minRoomSize = Math.min(w * 0.8, h * 0.8);
-  const maxRoomSize = Math.min(w * 1.4, h * 1.4);
-  
-  // First room (spawn room) - center of map
-  const centerX = levelW / 2;
-  const centerY = levelH / 2;
-  const firstRoomW = minRoomSize + Math.random() * (maxRoomSize - minRoomSize);
-  const firstRoomH = minRoomSize + Math.random() * (maxRoomSize - minRoomSize);
-  const firstRoom = {
-    x: centerX - firstRoomW / 2,
-    y: centerY - firstRoomH / 2,
-    w: firstRoomW,
-    h: firstRoomH,
-    id: 0,
-    enemies: [],
-    cleared: false
-  };
-  rooms.push(firstRoom);
-  walkableAreas.push({
-    x: firstRoom.x,
-    y: firstRoom.y,
-    w: firstRoom.w,
-    h: firstRoom.h
-  });
-  
-  // Generate additional rooms around the first one
-  for (let i = 1; i < numRooms; i++) {
-    let attempts = 0;
-    let room = null;
-    
-    while (attempts < 50 && !room) {
-      const roomW = minRoomSize * 0.7 + Math.random() * (maxRoomSize - minRoomSize * 0.7);
-      const roomH = minRoomSize * 0.7 + Math.random() * (maxRoomSize - minRoomSize * 0.7);
-      
-      // Try to place room near existing rooms but not overlapping
-      const baseRoom = rooms[Math.floor(Math.random() * rooms.length)];
-      const angle = Math.random() * Math.PI * 2;
-      const distance = (baseRoom.w + baseRoom.h) / 2 + 100 + Math.random() * 200;
-      const roomX = baseRoom.x + baseRoom.w / 2 + Math.cos(angle) * distance - roomW / 2;
-      const roomY = baseRoom.y + baseRoom.h / 2 + Math.sin(angle) * distance - roomH / 2;
-      
-      // Clamp to level bounds
-      const clampedX = clamp(roomX, padding, levelW - padding - roomW);
-      const clampedY = clamp(roomY, padding, levelH - padding - roomH);
-      
-      // Check for significant overlap with existing rooms
-      let overlaps = false;
-      for (const existingRoom of rooms) {
-        const overlapX = Math.max(0, Math.min(clampedX + roomW, existingRoom.x + existingRoom.w) - Math.max(clampedX, existingRoom.x));
-        const overlapY = Math.max(0, Math.min(clampedY + roomH, existingRoom.y + existingRoom.h) - Math.max(clampedY, existingRoom.y));
-        if (overlapX * overlapY > roomW * roomH * 0.3) {
-          overlaps = true;
-          break;
-        }
-      }
-      
-      if (!overlaps) {
-        room = {
-          x: clampedX,
-          y: clampedY,
-          w: roomW,
-          h: roomH,
-          id: i,
-          enemies: [],
-          cleared: false
-        };
-        rooms.push(room);
-        walkableAreas.push({
-          x: room.x,
-          y: room.y,
-          w: room.w,
-          h: room.h
-        });
-        
-        // Create wide corridor connecting to previous room
-        const prevRoom = baseRoom;
-        const corridorW = 100 + Math.random() * 40; // Wider corridors (100-140px) for better navigation
-        const corridorH = 100 + Math.random() * 40;
-        
-        // Calculate room centers
-        const roomCenterX = room.x + room.w / 2;
-        const roomCenterY = room.y + room.h / 2;
-        const prevCenterX = prevRoom.x + prevRoom.w / 2;
-        const prevCenterY = prevRoom.y + prevRoom.h / 2;
-        
-        // Horizontal corridor
-        if (Math.abs(roomCenterX - prevCenterX) > Math.abs(roomCenterY - prevCenterY)) {
-          const corrX = Math.min(roomCenterX, prevCenterX) - corridorW / 2;
-          const corrY = (roomCenterY + prevCenterY) / 2 - corridorH / 2;
-          const corrW = Math.abs(roomCenterX - prevCenterX) + corridorW;
-          corridors.push({
-            x: corrX,
-            y: corrY,
-            w: corrW,
-            h: corridorH
-          });
-          walkableAreas.push({
-            x: corrX,
-            y: corrY,
-            w: corrW,
-            h: corridorH
-          });
-        } else {
-          // Vertical corridor
-          const corrX = (roomCenterX + prevCenterX) / 2 - corridorW / 2;
-          const corrY = Math.min(roomCenterY, prevCenterY) - corridorH / 2;
-          const corrH = Math.abs(roomCenterY - prevCenterY) + corridorH;
-          corridors.push({
-            x: corrX,
-            y: corrY,
-            w: corridorW,
-            h: corrH
-          });
-          walkableAreas.push({
-            x: corrX,
-            y: corrY,
-            w: corridorW,
-            h: corrH
-          });
-        }
-      }
-      attempts++;
-    }
+  // Convert BSP rooms to our format
+  // Visual rendering uses exact coordinates
+  // Collision uses exact room/corridor bounds (no expansion)
+  // pathfindingGrid is ONLY for pathfinding (flow fields, A*), not collision
+  for (let i = 0; i < bspResult.rooms.length; i++) {
+    const bspRoom = bspResult.rooms[i];
+    const room = {
+      x: bspRoom.x,
+      y: bspRoom.y,
+      w: bspRoom.w,
+      h: bspRoom.h,
+      id: i,
+      enemies: [],
+      cleared: false
+    };
+    rooms.push(room);
   }
   
-  // Add visual decorations (don't block movement)
-  // Grass patches
-  for (let i = 0; i < 40 + floor * 10; i++) {
+  // Convert BSP corridors to our format
+  for (const bspCorr of bspResult.corridors) {
+    corridors.push({
+      x: bspCorr.x,
+      y: bspCorr.y,
+      w: bspCorr.w,
+      h: bspCorr.h
+    });
+  }
+  
+  // Add minimal visual decorations (don't block movement)
+  // Grass patches (reduced - just a few for subtle variety)
+  for (let i = 0; i < 5 + floor * 2; i++) {
     const room = rooms[Math.floor(Math.random() * rooms.length)];
     grass.push({
       x: room.x + Math.random() * room.w,
@@ -280,20 +654,9 @@ function generateProceduralLevel(w, h, floor) {
     });
   }
   
-  // Rock decorations
-  for (let i = 0; i < 20 + floor * 5; i++) {
-    const room = rooms[Math.floor(Math.random() * rooms.length)];
-    rocks.push({
-      x: room.x + Math.random() * room.w,
-      y: room.y + Math.random() * room.h,
-      r: 8 + Math.random() * 12,
-      type: Math.random() < 0.5 ? "small" : "medium"
-    });
-  }
-  
   // Water features (visual only)
   if (biome === "grassland" || biome === "forest") {
-    for (let i = 0; i < 3 + Math.floor(Math.random() * 3); i++) {
+    for (let i = 0; i < 2 + Math.floor(Math.random() * 2); i++) {
       const room = rooms[Math.floor(Math.random() * rooms.length)];
       water.push({
         x: room.x + Math.random() * (room.w - 60),
@@ -304,25 +667,201 @@ function generateProceduralLevel(w, h, floor) {
     }
   }
   
+  // Store BSP grid for A* pathfinding (gridSize = 10 for pathfinding)
+  // FORCE ARRAY STRUCTURE: Ensure bspResult.grid is strictly a 2D Array
+  let pathfindingGrid = bspResult.grid;
+  
+  // If grid is an object with a 'grid' property (from convertBSPToGrid result), extract it
+  if (pathfindingGrid && typeof pathfindingGrid === 'object' && !Array.isArray(pathfindingGrid) && pathfindingGrid.grid) {
+    pathfindingGrid = pathfindingGrid.grid;
+  }
+  
+  // Convert to strict 2D array if needed (deep copy to ensure it's a proper array)
+  if (pathfindingGrid && typeof pathfindingGrid.length === 'number') {
+    const gridH = pathfindingGrid.length;
+    const strictGrid = [];
+    for (let y = 0; y < gridH; y++) {
+      if (pathfindingGrid[y] && typeof pathfindingGrid[y].length === 'number') {
+        const gridW = pathfindingGrid[y].length;
+        strictGrid[y] = [];
+        for (let x = 0; x < gridW; x++) {
+          strictGrid[y][x] = pathfindingGrid[y][x] || 0; // Ensure integer (0 or 1)
+        }
+      }
+    }
+    pathfindingGrid = strictGrid;
+  }
+  
+  const pathfindingWallInfluence = bspResult.wallInfluence || null;
+  const pathfindingGridSize = 10; // Grid size used for A* pathfinding
+  
+  // VALIDATION: Check that pathfindingGrid is a proper 2D array before returning
+  if (!Array.isArray(pathfindingGrid) || !Array.isArray(pathfindingGrid[0])) {
+    console.error('GRID DATA ERROR: bspResult.grid is not a 2D array', pathfindingGrid);
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateProceduralLevel:grid_error',message:'Grid validation failed',data:{gridType:pathfindingGrid?.constructor?.name,isArray:Array.isArray(pathfindingGrid),hasFirstRow:!!pathfindingGrid?.[0],firstRowIsArray:Array.isArray(pathfindingGrid?.[0]),bspResultKeys:Object.keys(bspResult)},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'F'})}).catch(()=>{});
+    // #endregion
+    // Fallback: create empty grid to prevent crash
+    pathfindingGrid = [[1]]; // Single walkable cell as fallback
+  }
+  
+  // #region agent log
+  const gridType = pathfindingGrid?.constructor?.name;
+  const isArray = Array.isArray(pathfindingGrid);
+  const hasLength = typeof pathfindingGrid?.length === 'number';
+  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateProceduralLevel:pathfindingGrid',message:'Pathfinding grid stored',data:{gridType,isArray,hasLength,gridLength:pathfindingGrid?.length,firstRowIsArray:Array.isArray(pathfindingGrid?.[0]),firstRowLength:pathfindingGrid?.[0]?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'F'})}).catch(()=>{});
+  // #endregion
+  
   return { 
     rooms, 
     corridors, 
     obstacles, 
     grass, 
     water, 
-    rocks, 
+    rocks,
     biome, 
     w: levelW, 
     h: levelH, 
-    walkableAreas 
+    pathfindingGrid, // BSP grid for A* pathfinding (0=wall, 1=floor)
+    pathfindingWallInfluence, // Wall influence map for path weighting
+    pathfindingGridSize // Grid cell size (10px)
   };
+}
+
+// ============================================================================
+// COLLISION DETECTION SYSTEM
+// ============================================================================
+// Hybrid approach: Grid quick rejection + precise circle-rectangle overlap
+// Uses exact room/corridor bounds from BSP generation (no expansion)
+// Visual bounds = collision bounds for perfect accuracy
+
+// Helper: Check if circle overlaps rectangle
+function circleOverlapsRect(cx, cy, radius, rx, ry, rw, rh) {
+  // Find closest point on rectangle to circle center
+  const closestX = Math.max(rx, Math.min(cx, rx + rw));
+  const closestY = Math.max(ry, Math.min(cy, ry + rh));
+  // Check if distance from circle center to closest point <= radius
+  const distSq = (cx - closestX) ** 2 + (cy - closestY) ** 2;
+  return distSq <= radius ** 2;
+}
+
+// Collision margin constants - adjust these to fine-tune collision accuracy
+// These are at the top level so they're easy to find and adjust
+// Each edge can be adjusted independently for perfect alignment
+const COLLISION_MARGIN_LEFT = 0;   // Left wall (cube's left face)
+const COLLISION_MARGIN_RIGHT = 0.5;  // Right wall (cube's right face)
+const COLLISION_MARGIN_TOP = 0;     // Top wall (cube's top face) - adjust this
+const COLLISION_MARGIN_BOTTOM = 0.5;  // Bottom wall (cube's bottom face)
+
+// Check if a point (with radius) is walkable
+// Uses grid for quick rejection, then precise circle-rectangle checks
+// In isometric view, we need to account for the visual offset of the cube's bottom face
+function isPointWalkable(x, y, levelData, radius = 12) {
+  if (!levelData) return true; // No level data = walkable (fallback)
+  
+  const gridSize = levelData.pathfindingGridSize || 10;
+  
+  // Quick rejection: Check if grid cell is walkable
+  if (levelData.pathfindingGrid && Array.isArray(levelData.pathfindingGrid)) {
+    const gridX = Math.floor(x / gridSize);
+    const gridY = Math.floor(y / gridSize);
+    const gridW = levelData.pathfindingGrid[0]?.length || 0;
+    const gridH = levelData.pathfindingGrid.length || 0;
+    
+    // Check current cell and nearby cells (within radius)
+    const checkRadius = Math.ceil(radius / gridSize) + 1;
+    let foundWalkableCell = false;
+    
+    for (let dy = -checkRadius; dy <= checkRadius; dy++) {
+      for (let dx = -checkRadius; dx <= checkRadius; dx++) {
+        const gx = gridX + dx;
+        const gy = gridY + dy;
+        
+        if (gx < 0 || gx >= gridW || gy < 0 || gy >= gridH) {
+          continue; // Out of bounds, skip
+        }
+        
+        if (levelData.pathfindingGrid[gy] && levelData.pathfindingGrid[gy][gx] === 1) {
+          foundWalkableCell = true;
+          break; // Found at least one walkable cell nearby
+        }
+      }
+      if (foundWalkableCell) break;
+    }
+    
+    // If no walkable cells nearby, definitely not walkable
+    if (!foundWalkableCell) {
+      return false;
+    }
+  }
+  
+  // Precise check: Circle must be inside rectangle (circle edge can touch wall)
+  // Use independent margins for each edge to account for isometric cube shape
+  const marginLeft = radius * COLLISION_MARGIN_LEFT;
+  const marginRight = radius * COLLISION_MARGIN_RIGHT;
+  const marginTop = radius * COLLISION_MARGIN_TOP;
+  const marginBottom = radius * COLLISION_MARGIN_BOTTOM;
+  
+  // Check if circle is inside any room (circle edge can touch wall)
+  for (const room of levelData.rooms || []) {
+    // Check each edge independently with its own margin
+    if (x >= room.x + marginLeft && 
+        x <= room.x + room.w - marginRight &&
+        y >= room.y + marginTop && 
+        y <= room.y + room.h - marginBottom) {
+      return true; // Inside a room
+    }
+  }
+  
+  // Check if circle is inside any corridor (circle edge can touch wall)
+  for (const corridor of levelData.corridors || []) {
+    // Check each edge independently with its own margin
+    if (x >= corridor.x + marginLeft && 
+        x <= corridor.x + corridor.w - marginRight &&
+        y >= corridor.y + marginTop && 
+        y <= corridor.y + corridor.h - marginBottom) {
+      return true; // Inside a corridor
+    }
+  }
+  
+  // Not in any walkable area
+  return false;
+}
+
+// Find nearest walkable position
+function findNearestWalkable(x, y, levelData, radius = 12) {
+  if (!levelData) return { x, y };
+  
+  let bestPos = { x, y };
+  let minDist = Infinity;
+  
+  // Check all rooms and corridors
+  // Use independent margins for each edge to match isPointWalkable
+  const marginLeft = radius * COLLISION_MARGIN_LEFT;
+  const marginRight = radius * COLLISION_MARGIN_RIGHT;
+  const marginTop = radius * COLLISION_MARGIN_TOP;
+  const marginBottom = radius * COLLISION_MARGIN_BOTTOM;
+  const areas = [...(levelData.rooms || []), ...(levelData.corridors || [])];
+  for (const area of areas) {
+    // Clamp position to area bounds (accounting for independent edge margins)
+    const clampedX = Math.max(area.x + marginLeft, Math.min(x, area.x + area.w - marginRight));
+    const clampedY = Math.max(area.y + marginTop, Math.min(y, area.y + area.h - marginBottom));
+    const dist = Math.hypot(x - clampedX, y - clampedY);
+    
+    if (dist < minDist) {
+      minDist = dist;
+      bestPos = { x: clampedX, y: clampedY };
+    }
+  }
+  
+  return bestPos;
 }
 
 // ============================================================================
 // PATHFINDING & LINE OF SIGHT SYSTEM
 // ============================================================================
 
-// Line of sight check - raycast from point A to point B
+// Line of sight check - raycast with collision detection
 function hasLineOfSight(fromX, fromY, toX, toY, levelData, stepSize = 10) {
   const dx = toX - fromX;
   const dy = toY - fromY;
@@ -346,94 +885,118 @@ function hasLineOfSight(fromX, fromY, toX, toY, levelData, stepSize = 10) {
   return true; // Clear path
 }
 
-// Flow field pathfinding - computes direction vectors for all grid cells
-// Optimized version with caching and reduced checks
-// Smaller grid size (50px) for better navigation in narrow corridors
-function computeFlowField(targetX, targetY, levelData, gridSize = 50) {
-  const levelW = levelData.w;
-  const levelH = levelData.h;
-  const gridW = Math.ceil(levelW / gridSize);
-  const gridH = Math.ceil(levelH / gridSize);
+// ============================================================================
+// FLOW FIELD PATHFINDING (Dijkstra Map)
+// ============================================================================
+
+// Generate Flow Field using BFS/Dijkstra - runs once per frame
+// Creates a distance map from target position to all walkable tiles
+// Returns: { distances: 2D array, gridSize: number, gridW: number, gridH: number }
+function generateFlowField(targetX, targetY, grid, gridSize = 10) {
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateFlowField:entry',message:'Flow field generation started',data:{targetX,targetY,gridSize,hasGrid:!!grid,gridType:grid?.constructor?.name,isArray:Array.isArray(grid),hasLength:typeof grid?.length==='number',gridH:grid?.length,gridW:grid?.[0]?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
   
-  // Initialize distance grid with Infinity
+  // CLEAN FLOW FIELD INPUT: Strict validation - must be a 2D array
+  if (!Array.isArray(grid) || grid.length === 0) {
+    const errorMsg = 'FLOW FIELD ERROR: grid must be a 2D array, got: ' + (grid?.constructor?.name || typeof grid);
+    console.error(errorMsg, grid);
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateFlowField:error',message:'Grid is not an array',data:{hasGrid:!!grid,gridType:grid?.constructor?.name,isArray:Array.isArray(grid),error:errorMsg},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    throw new Error(errorMsg);
+  }
+  
+  // Check if first row exists and is an array
+  if (!Array.isArray(grid[0]) || grid[0].length === 0) {
+    const errorMsg = 'FLOW FIELD ERROR: grid[0] must be an array, got: ' + (grid[0]?.constructor?.name || typeof grid[0]);
+    console.error(errorMsg, grid[0]);
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateFlowField:error2',message:'Grid[0] is not an array',data:{hasGrid0:!!grid[0],grid0Type:grid[0]?.constructor?.name,isArray:Array.isArray(grid[0]),error:errorMsg},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    throw new Error(errorMsg);
+  }
+  
+  const gridH = grid.length;
+  const gridW = grid[0].length;
+  
+  // Convert target to grid coordinates
+  const targetGridX = Math.floor(targetX / gridSize);
+  const targetGridY = Math.floor(targetY / gridSize);
+  
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateFlowField:coords',message:'Grid coordinates calculated',data:{targetGridX,targetGridY,gridW,gridH,isInBounds:targetGridY>=0&&targetGridY<gridH&&targetGridX>=0&&targetGridX<gridW,gridValue:targetGridY>=0&&targetGridY<gridH&&targetGridX>=0&&targetGridX<gridW?grid[targetGridY][targetGridX]:'out_of_bounds'},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
+  // #endregion
+  
+  // Initialize distance map with Infinity (walls have infinite cost)
   const distances = [];
   for (let y = 0; y < gridH; y++) {
     distances[y] = [];
     for (let x = 0; x < gridW; x++) {
-      distances[y][x] = Infinity;
+      // Walls (value 0) have infinite distance, floors (value 1) start at Infinity
+      distances[y][x] = grid[y][x] === 1 ? Infinity : Infinity; // Both start as Infinity
     }
   }
   
-  // Initialize flow field (direction vectors)
-  const flowField = [];
-  for (let y = 0; y < gridH; y++) {
-    flowField[y] = [];
-    for (let x = 0; x < gridW; x++) {
-      flowField[y][x] = { x: 0, y: 0 };
-    }
-  }
-  
-  // Pre-compute walkable grid (cache results to avoid repeated checks)
-  // Use smaller radius (4) for pathfinding so enemies can navigate through tight spaces
-  const walkableGrid = [];
-  for (let y = 0; y < gridH; y++) {
-    walkableGrid[y] = [];
-    for (let x = 0; x < gridW; x++) {
-      const cellCenterX = x * gridSize + gridSize / 2;
-      const cellCenterY = y * gridSize + gridSize / 2;
-      // Use smaller radius for pathfinding - enemies can squeeze through tighter spaces
-      walkableGrid[y][x] = isPointWalkable(cellCenterX, cellCenterY, levelData, 4);
-    }
-  }
-  
-  // Get target cell
-  const targetCellX = Math.floor(targetX / gridSize);
-  const targetCellY = Math.floor(targetY / gridSize);
-  
-  // BFS to compute distances from target
+  // BFS starting from target position
   const queue = [];
-  if (targetCellX >= 0 && targetCellX < gridW && targetCellY >= 0 && targetCellY < gridH) {
-    if (walkableGrid[targetCellY][targetCellX]) {
-      distances[targetCellY][targetCellX] = 0;
-      queue.push({ x: targetCellX, y: targetCellY });
-    } else {
-      // Target is in unwalkable cell - find nearest walkable cell (limited search)
-      let nearestWalkable = null;
-      let nearestDist = Infinity;
-      const searchRadius = 3; // Reduced from 5
-      for (let checkY = Math.max(0, targetCellY - searchRadius); checkY < Math.min(gridH, targetCellY + searchRadius + 1); checkY++) {
-        for (let checkX = Math.max(0, targetCellX - searchRadius); checkX < Math.min(gridW, targetCellX + searchRadius + 1); checkX++) {
-          if (walkableGrid[checkY][checkX]) {
-            const dist = Math.hypot(checkX - targetCellX, checkY - targetCellY);
-            if (dist < nearestDist) {
-              nearestDist = dist;
-              nearestWalkable = { x: checkX, y: checkY };
-            }
+  
+  // Find nearest walkable cell to target if target is not walkable
+  let startX = targetGridX;
+  let startY = targetGridY;
+  
+  if (startY < 0 || startY >= gridH || startX < 0 || startX >= gridW || grid[startY][startX] !== 1) {
+    // Target not walkable - find nearest walkable cell
+    let found = false;
+    for (let r = 1; r <= 5 && !found; r++) {
+      for (let dy = -r; dy <= r && !found; dy++) {
+        for (let dx = -r; dx <= r && !found; dx++) {
+          const y = targetGridY + dy;
+          const x = targetGridX + dx;
+          if (y >= 0 && y < gridH && x >= 0 && x < gridW && grid[y][x] === 1) {
+            startX = x;
+            startY = y;
+            found = true;
           }
         }
       }
-      if (nearestWalkable) {
-        distances[nearestWalkable.y][nearestWalkable.x] = 0;
-        queue.push(nearestWalkable);
-      }
     }
+    if (!found) return null; // Can't find walkable cell
   }
   
-  // BFS to fill distance grid (use 4-directional for better pathfinding)
-  const dirs = [[0, 1], [1, 0], [0, -1], [-1, 0]]; // Only cardinal directions
+  // Start BFS from target position (distance 0)
+  distances[startY][startX] = 0;
+  queue.push({ x: startX, y: startY });
+  
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateFlowField:bfs_start',message:'BFS started',data:{startX,startY,queueLength:queue.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'C'})}).catch(()=>{});
+  // #endregion
+  
+  // 8-directional movement for better pathfinding
+  const dirs = [
+    [0, 1, 1.0], [1, 0, 1.0], [0, -1, 1.0], [-1, 0, 1.0], // Cardinal (cost 1.0)
+    [1, 1, 1.414], [1, -1, 1.414], [-1, -1, 1.414], [-1, 1, 1.414] // Diagonal (cost sqrt(2))
+  ];
+  
+  // BFS to fill distance map
+  let processedCells = 0;
   while (queue.length > 0) {
     const current = queue.shift();
     const currentDist = distances[current.y][current.x];
+    processedCells++;
     
-    for (const [dx, dy] of dirs) {
+    for (const [dx, dy, cost] of dirs) {
       const nx = current.x + dx;
       const ny = current.y + dy;
       
-      if (nx < 0 || nx >= gridW || ny < 0 || ny >= gridH) continue;
-      if (!walkableGrid[ny][nx]) continue; // Use cached walkable check
+      // Bounds check
+      if (ny < 0 || ny >= gridH || nx < 0 || nx >= gridW) continue;
       
-      // Update distance if shorter path found
-      const newDist = currentDist + 1;
+      // Only process walkable tiles (value = 1)
+      if (grid[ny][nx] !== 1) continue; // Walls have infinite cost (already set)
+      
+      // Update distance if we found a shorter path
+      const newDist = currentDist + cost;
       if (newDist < distances[ny][nx]) {
         distances[ny][nx] = newDist;
         queue.push({ x: nx, y: ny });
@@ -441,64 +1004,105 @@ function computeFlowField(targetX, targetY, levelData, gridSize = 50) {
     }
   }
   
-  // Compute flow field directions (point toward lower distance)
-  // Simplified unreachable cell handling
-  for (let y = 0; y < gridH; y++) {
-    for (let x = 0; x < gridW; x++) {
-      if (distances[y][x] === Infinity) {
-        // Unreachable cell - point toward target as fallback (skip expensive search)
-        const dx = targetX - (x * gridSize + gridSize / 2);
-        const dy = targetY - (y * gridSize + gridSize / 2);
-        const len = Math.hypot(dx, dy) || 1;
-        flowField[y][x] = { x: dx / len, y: dy / len };
-        continue;
-      }
-      
-      // Find direction to neighbor with lowest distance
-      let bestDir = { x: 0, y: 0 };
-      let bestDist = distances[y][x];
-      
-      for (const [dx, dy] of dirs) {
-        const nx = x + dx;
-        const ny = y + dy;
-        
-        if (nx < 0 || nx >= gridW || ny < 0 || ny >= gridH) continue;
-        
-        if (distances[ny][nx] < bestDist) {
-          bestDist = distances[ny][nx];
-          bestDir = { x: dx, y: dy }; // Already normalized
-        }
-      }
-      
-      // If no better neighbor found, point directly toward target
-      if (bestDir.x === 0 && bestDir.y === 0) {
-        const dx = targetX - (x * gridSize + gridSize / 2);
-        const dy = targetY - (y * gridSize + gridSize / 2);
-        const len = Math.hypot(dx, dy) || 1;
-        bestDir = { x: dx / len, y: dy / len };
-      }
-      
-      flowField[y][x] = bestDir;
+  // #region agent log
+  const sampleDistances = [];
+  for(let y=0;y<Math.min(5,gridH);y++) {
+    for(let x=0;x<Math.min(5,gridW);x++) {
+      sampleDistances.push({x,y,dist:distances[y][x],grid:grid[y][x]});
     }
   }
+  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateFlowField:bfs_end',message:'BFS completed',data:{processedCells,queueLength:queue.length,sampleDistances},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'C'})}).catch(()=>{});
+  // #endregion
   
-  return { flowField, gridSize, gridW, gridH };
+  return {
+    distances,
+    gridSize,
+    gridW,
+    gridH
+  };
 }
 
-// Get flow field direction for a world position
-function getFlowFieldDirection(x, y, flowFieldData) {
-  if (!flowFieldData || !flowFieldData.flowField) return { x: 0, y: 0 };
+// Get flow direction vector for a given world position
+// Returns normalized vector pointing toward neighbor with lowest distance
+function getFlowDirection(x, y, flowFieldData) {
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getFlowDirection:entry',message:'Flow direction calculation',data:{x,y,hasFlowField:!!flowFieldData,hasDistances:!!flowFieldData?.distances},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+  // #endregion
   
-  const { flowField, gridSize } = flowFieldData;
-  const cellX = Math.floor(x / gridSize);
-  const cellY = Math.floor(y / gridSize);
+  if (!flowFieldData || !flowFieldData.distances) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getFlowDirection:null',message:'No flow field data',data:{hasFlowField:!!flowFieldData,hasDistances:!!flowFieldData?.distances},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    return { x: 0, y: 0 }; // No flow field
+  }
   
-  if (cellY < 0 || cellY >= flowField.length || cellX < 0 || cellX >= flowField[0].length) {
+  const { distances, gridSize } = flowFieldData;
+  const gridH = distances.length;
+  const gridW = distances[0].length;
+  
+  // Convert world coordinates to grid coordinates
+  const gridX = Math.floor(x / gridSize);
+  const gridY = Math.floor(y / gridSize);
+  
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getFlowDirection:coords',message:'Grid coordinates',data:{gridX,gridY,gridW,gridH,isInBounds:gridY>=0&&gridY<gridH&&gridX>=0&&gridX<gridW},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+  // #endregion
+  
+  // Bounds check
+  if (gridY < 0 || gridY >= gridH || gridX < 0 || gridX >= gridW) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getFlowDirection:out_of_bounds',message:'Out of bounds',data:{gridX,gridY,gridW,gridH},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+    // #endregion
+    return { x: 0, y: 0 }; // Out of bounds
+  }
+  
+  const currentDist = distances[gridY][gridX];
+  
+  // If current cell has infinite distance (wall), return zero vector
+  if (currentDist === Infinity) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getFlowDirection:infinity',message:'Current cell is wall',data:{gridX,gridY,currentDist},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
     return { x: 0, y: 0 };
   }
   
-  return flowField[cellY][cellX];
+  // Check all 8 neighbors to find the one with lowest distance
+  const dirs = [
+    [0, 1], [1, 0], [0, -1], [-1, 0], // Cardinal
+    [1, 1], [1, -1], [-1, -1], [-1, 1] // Diagonal
+  ];
+  
+  let bestDir = { x: 0, y: 0 };
+  let bestDist = currentDist;
+  const neighborDists = [];
+  
+  for (const [dx, dy] of dirs) {
+    const nx = gridX + dx;
+    const ny = gridY + dy;
+    
+    if (ny < 0 || ny >= gridH || nx < 0 || nx >= gridW) continue;
+    
+    const neighborDist = distances[ny][nx];
+    neighborDists.push({dx,dy,dist:neighborDist});
+    
+    // Find neighbor with lowest distance (closer to target)
+    if (neighborDist < bestDist) {
+      bestDist = neighborDist;
+      // Normalize direction vector
+      const len = Math.hypot(dx, dy) || 1;
+      bestDir = { x: dx / len, y: dy / len };
+    }
+  }
+  
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getFlowDirection:result',message:'Flow direction result',data:{gridX,gridY,currentDist,bestDist,bestDir,neighborDists},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+  // #endregion
+  
+  // If no better neighbor found, return zero vector (already at target or stuck)
+  return bestDir;
 }
+
+
 
 // ============================================================================
 // ISOMETRIC TRANSFORMATION FUNCTIONS
@@ -595,14 +1199,16 @@ function drawIsometricCube(ctx, screenX, screenY, size, color, isoScale = 0.01, 
   // - Right face: parallelogram (visible on the right side)
   
   // Convert size from world units to isometric screen space
-  const baseMultiplier = 60; // Reduced from 300 to balance with map size
+  // Reduce multiplier so cube fits within collision radius (no visual overlap with walls)
+  const baseMultiplier = 45; // Reduced from 60 to ensure cube fits within collision circle
   const cubeSize = size * baseMultiplier * isoScale;
   
   // In isometric projection, use ISO_TILE_WIDTH and ISO_TILE_HEIGHT ratios
   // For a cube in isometric: width = size, height = size/2 (2:1 ratio)
-  const halfW = cubeSize * 0.5; // Half width in isometric screen space
-  const halfH = cubeSize * 0.25; // Half height in isometric screen space (isometric is 2:1 ratio)
-  const height = cubeSize * 0.6; // Height of the cube (vertical offset)
+  // Reduce visual extent to ensure it fits within the collision radius
+  const halfW = cubeSize * 0.4; // Reduced from 0.5 to fit within collision circle
+  const halfH = cubeSize * 0.2; // Reduced from 0.25 to fit within collision circle
+  const height = cubeSize * 0.5; // Reduced from 0.6 to match smaller base
   
   // Adjust screen position based on z (jump height)
   // In isometric, higher z means higher on screen (negative Y)
@@ -705,12 +1311,12 @@ function drawEntityAsCube(ctx, screenX, screenY, size, color, isoScale = 0.01, s
   // Shadow offset increases with z (jump height) - shadow moves away from entity
   if (shadow) {
     // Calculate shadow size based on cube size (same scaling as cube)
-    const baseMultiplier = 60; // Match cube baseMultiplier
+    const baseMultiplier = 45; // Match cube baseMultiplier
     const cubeSize = size * baseMultiplier * isoScale;
     // Shadow is an ellipse that matches the isometric projection
     // Width is larger, height is smaller (isometric 2:1 ratio)
-    const shadowWidth = cubeSize * 0.6; // Match cube base width
-    const shadowHeight = cubeSize * 0.3; // Half width for isometric ellipse
+    const shadowWidth = cubeSize * 0.5; // Reduced to match smaller cube
+    const shadowHeight = cubeSize * 0.25; // Reduced to match smaller cube
     
     // Shadow offset based on z (higher z = shadow further from entity)
     // In isometric, shadow moves down and slightly away when entity is higher
@@ -735,6 +1341,7 @@ function drawEntityAsCube(ctx, screenX, screenY, size, color, isoScale = 0.01, s
 // isoScale is the isometric scale factor
 function drawIsometricRectangle(ctx, rect, color, camX = 0, camY = 0, screenW = 0, screenH = 0, isoScale = 0.01) {
   // Convert absolute positions to isometric, then subtract camera's isometric position
+  // Use exact coordinates to match collision geometry - no visual padding
   const camIso = worldToIso(camX, camY, 0, isoScale);
   const topLeft = worldToIso(rect.x, rect.y, 0, isoScale);
   const topRight = worldToIso(rect.x + rect.w, rect.y, 0, isoScale);
@@ -755,10 +1362,7 @@ function drawIsometricRectangle(ctx, rect, color, camX = 0, camY = 0, screenW = 
   ctx.closePath();
   ctx.fill();
   
-  // Optional: Add border
-  ctx.strokeStyle = adjustBrightness(color, -0.2);
-  ctx.lineWidth = 2;
-  ctx.stroke();
+  // No border - unified floor design
 }
 
 // Helper function to adjust color brightness
@@ -772,50 +1376,6 @@ function adjustBrightness(color, amount) {
   return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
 }
 
-// Check if a point is in a walkable area
-function isPointWalkable(x, y, levelData, playerRadius = 12) {
-  if (!levelData || !levelData.walkableAreas) return true;
-  
-  // Check if point is inside any walkable area (with padding for player radius)
-  for (const area of levelData.walkableAreas) {
-    if (x >= area.x + playerRadius && 
-        x <= area.x + area.w - playerRadius &&
-        y >= area.y + playerRadius && 
-        y <= area.y + area.h - playerRadius) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Find nearest walkable position
-function findNearestWalkable(x, y, levelData, playerRadius = 12) {
-  if (!levelData || !levelData.walkableAreas) return { x, y };
-  
-  if (isPointWalkable(x, y, levelData, playerRadius)) {
-    return { x, y };
-  }
-  
-  // Find closest walkable point
-  let closestX = x;
-  let closestY = y;
-  let minDist = Infinity;
-  
-  for (const area of levelData.walkableAreas) {
-    // Clamp to area bounds
-    const clampedX = clamp(x, area.x + playerRadius, area.x + area.w - playerRadius);
-    const clampedY = clamp(y, area.y + playerRadius, area.y + area.h - playerRadius);
-    const dist = Math.hypot(x - clampedX, y - clampedY);
-    
-    if (dist < minDist) {
-      minDist = dist;
-      closestX = clampedX;
-      closestY = clampedY;
-    }
-  }
-  
-  return { x: closestX, y: closestY };
-}
 
 const RARITY = {
   COMMON: "Common",
@@ -1534,9 +2094,9 @@ export default function NeonPitRoguelikeV3() {
         },
         levelBonuses: [
           (p) => (p.weaponDamage *= 1.12),
-          (p) => (p.freezeChance = clamp(p.freezeChance + 0.06, 0, 0.7)),
           (p) => (p.attackCooldown = Math.max(0.24, p.attackCooldown * 0.9)),
           (p) => (p.weaponDamage *= 1.18),
+          (p) => (p.projectileSpeed *= 1.08),
         ],
         icon: makeIconDraw("time"),
       },
@@ -1772,8 +2332,12 @@ export default function NeonPitRoguelikeV3() {
           }
           
           // Add projectiles to all weapons (100% chance)
+          // This includes bananarang - quantity tome increases bananarang count
           if (p.weapons && p.weapons.length > 0) {
             for (const weapon of p.weapons) {
+              // For bananarang, quantity tome increases the number of bananarangs you can have
+              // But bananarang is limited to 1 active at a time, so this affects the upgrade path
+              // Instead, we'll increase the weapon's projectiles stat (which affects other upgrades)
               weapon.projectiles = clamp(weapon.projectiles + projectilesToAdd, 1, 16);
             }
           }
@@ -2257,20 +2821,24 @@ export default function NeonPitRoguelikeV3() {
     let validSpawn = false;
     let attempts = 0;
     
-    // Try to spawn in walkable areas if level data exists
-    if (s.levelData && s.levelData.walkableAreas && s.levelData.walkableAreas.length > 0) {
-      while (!validSpawn && attempts < 50) {
-        // Pick a random walkable area
-        const area = s.levelData.walkableAreas[Math.floor(Math.random() * s.levelData.walkableAreas.length)];
-        x = rand(area.x + 20, area.x + area.w - 20);
-        y = rand(area.y + 20, area.y + area.h - 20);
-        
-        // Check distance from player
-        const dist2 = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
-        if (dist2 >= minDistFromPlayer * minDistFromPlayer) {
-          validSpawn = true;
+    // Try to spawn in rooms/corridors if level data exists
+    if (s.levelData) {
+      // Combine rooms and corridors for spawn selection
+      const allAreas = [...(s.levelData.rooms || []), ...(s.levelData.corridors || [])];
+      if (allAreas.length > 0) {
+        while (!validSpawn && attempts < 50) {
+          // Pick a random room or corridor
+          const area = allAreas[Math.floor(Math.random() * allAreas.length)];
+          x = rand(area.x + 20, area.x + area.w - 20);
+          y = rand(area.y + 20, area.y + area.h - 20);
+          
+          // Check distance from player
+          const dist2 = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
+          if (dist2 >= minDistFromPlayer * minDistFromPlayer) {
+            validSpawn = true;
+          }
+          attempts++;
         }
-        attempts++;
       }
     }
     
@@ -2350,7 +2918,8 @@ export default function NeonPitRoguelikeV3() {
     const isGoldenElite = isElite && Math.random() < goldenEliteChance;
 
     const baseHp = tier === "brute" ? 110 : tier === "runner" ? 56 : tier === "spitter" ? 64 : tier === "shocker" ? 72 : tier === "tank" ? 180 : 60;
-    const baseSp = tier === "brute" ? 95 : tier === "runner" ? 230 : tier === "spitter" ? 120 : tier === "shocker" ? 140 : tier === "tank" ? 70 : 150;
+    // Reduced enemy speeds by ~50% total for slower-paced gameplay
+    const baseSp = tier === "brute" ? 47 : tier === "runner" ? 113 : tier === "spitter" ? 59 : tier === "shocker" ? 69 : tier === "tank" ? 34 : 74;
     const r = tier === "brute" ? 18 : tier === "runner" ? 12 : tier === "spitter" ? 15 : tier === "shocker" ? 14 : tier === "tank" ? 22 : 14;
 
     // Elite enemies are much tougher: 3x HP, 1.4x size, 1.5x speed, damage reduction
@@ -2436,7 +3005,7 @@ export default function NeonPitRoguelikeV3() {
       slowMult: 1.0, // Speed multiplier when slowed
       burnT: 0,
       burnDps: 0,
-      contactCd: rand(0.2, 0.5),
+      contactCd: 0, // Start at 0 so enemies can hit immediately when they touch
       z: 0, // Initialize z position for isometric depth
     });
   }
@@ -2630,7 +3199,22 @@ export default function NeonPitRoguelikeV3() {
     }
     
     // Use forced upgrade type if provided, otherwise randomly select
-    const upgradeType = forcedUpgradeType || upgradeTypes[Math.floor(Math.random() * upgradeTypes.length)];
+    // Reduce chance of projectile upgrades (quantity) - make it less common
+    let upgradeType = forcedUpgradeType;
+    if (!upgradeType) {
+      // Weighted random selection - reduce projectile chance
+      const weights = upgradeTypes.map(t => t === "projectile" ? 0.15 : 0.85 / (upgradeTypes.length - 1));
+      let rand = Math.random();
+      let sum = 0;
+      for (let i = 0; i < upgradeTypes.length; i++) {
+        sum += weights[i];
+        if (rand < sum) {
+          upgradeType = upgradeTypes[i];
+          break;
+        }
+      }
+      if (!upgradeType) upgradeType = upgradeTypes[Math.floor(Math.random() * upgradeTypes.length)];
+    }
     
     // Apply weapon-specific upgrade
     if (upgradeType === "projectile") {
@@ -2696,11 +3280,16 @@ export default function NeonPitRoguelikeV3() {
     const tgt = acquireTarget(s, p.x, p.y);
     if (!tgt) return;
 
+    // Check line of sight before allowing player to shoot
+    if (s.levelData && !hasLineOfSight(p.x, p.y, tgt.x, tgt.y, s.levelData, 10)) {
+      return; // No line of sight, can't shoot
+    }
+
     const dx = tgt.x - p.x;
     const dy = tgt.y - p.y;
     const baseA = Math.atan2(dy, dx);
 
-    const speed = 740 * p.projectileSpeed;
+    const speed = 580 * p.projectileSpeed; // Reduced from 740 for slower-paced gameplay
     const bulletR = 4.1 * p.sizeMult;
     const knock = p.knockback;
 
@@ -2787,6 +3376,16 @@ export default function NeonPitRoguelikeV3() {
             e.hp -= finalDmg;
           e.hitT = 0.12;
             const dealt = Math.max(1, Math.round(finalDmg));
+            
+            // Apply lifesteal if player has it (melee)
+            if (p.lifesteal > 0) {
+              const healAmount = finalDmg * p.lifesteal;
+              p.hp = Math.min(p.maxHp, p.hp + healAmount);
+              // Visual feedback for lifesteal
+              if (healAmount > 0.5) {
+                pushCombatText(s, p.x, p.y - 30, `+${Math.round(healAmount)}`, "#4dff88", { size: 10, life: 0.6 });
+              }
+            }
             
             if (isBigBonk) {
               pushCombatText(s, e.x, e.y - 14, `BIG BONK! ${dealt}`, "#ff0000", { size: 18, life: 1.2, crit: true });
@@ -3381,12 +3980,25 @@ export default function NeonPitRoguelikeV3() {
     s.boss.maxHp = Math.round(980 + s.floor * 240);
     s.boss.hp = s.boss.maxHp;
     // Spawn boss at teleporter location if provided, otherwise center
+    // Ensure boss doesn't spawn on top of player
+    const p = s.player;
     if (bossX !== null && bossY !== null) {
-      s.boss.x = bossX;
-      s.boss.y = bossY;
+      // Check distance from player, if too close, offset
+      const dist = Math.hypot(bossX - p.x, bossY - p.y);
+      if (dist < 150) {
+        // Too close, offset away from player
+        const angle = Math.atan2(bossY - p.y, bossX - p.x);
+        s.boss.x = p.x + Math.cos(angle) * 150;
+        s.boss.y = p.y + Math.sin(angle) * 150;
+      } else {
+        s.boss.x = bossX;
+        s.boss.y = bossY;
+      }
     } else {
-    s.boss.x = w * 0.5;
-    s.boss.y = padding + 90;
+      // Spawn away from player if no teleporter
+      const angle = Math.random() * Math.PI * 2;
+      s.boss.x = p.x + Math.cos(angle) * 200;
+      s.boss.y = p.y + Math.sin(angle) * 200;
     }
     s.boss.timeLeft = seconds;
     s.boss.spitT = 0.6;
@@ -3404,7 +4016,7 @@ export default function NeonPitRoguelikeV3() {
       y: h * 0.55,
       r: 14,
 
-      speedBase: 200,
+      speedBase: 110, // Reduced from 200 for slower-paced gameplay
       speedBonus: 0,
 
       hp: 100,
@@ -3579,12 +4191,6 @@ export default function NeonPitRoguelikeV3() {
       player.x = clamp(startRoom.x + startRoom.w / 2, startRoom.x + padding, startRoom.x + startRoom.w - padding);
       player.y = clamp(startRoom.y + startRoom.h / 2, startRoom.y + padding, startRoom.y + startRoom.h - padding);
       
-      // Ensure player is in walkable area
-      if (s.levelData.walkableAreas && !isPointWalkable(player.x, player.y, s.levelData, player.r || 12)) {
-        const walkable = findNearestWalkable(player.x, player.y, s.levelData, player.r || 12);
-        player.x = walkable.x;
-        player.y = walkable.y;
-      }
       
       // Set initial camera position
       s.camera.x = clamp(player.x - w / 2, 0, Math.max(0, s.levelData.w - w));
@@ -3735,9 +4341,8 @@ export default function NeonPitRoguelikeV3() {
       const blockedDmg = dmg * shieldBlockPercent;
       const actualDmg = dmg - blockedDmg;
       
-      // Shield absorbs the blocked damage (reduces by blocked amount, not just 1)
-      const shieldUsed = Math.min(p.shield, blockedDmg);
-      p.shield = Math.max(0, p.shield - shieldUsed);
+      // Shield: 1 hit = 1 charge removed (simplified)
+      p.shield = Math.max(0, p.shield - 1);
       
       // Apply remaining damage to HP
       if (actualDmg > 0) {
@@ -4145,18 +4750,44 @@ export default function NeonPitRoguelikeV3() {
     const intensity = clamp(1 - s.stageLeft / s.stageDur, 0, 1);
     tickMusic(dt, intensity);
     
-    // Compute flow field for pathfinding (update less frequently for performance)
-    // Update every 0.5 seconds OR if player moved significantly (>150 units)
-    const playerMoved = !s.flowFieldLastPlayerPos || 
-      Math.hypot(p.x - s.flowFieldLastPlayerPos.x, p.y - s.flowFieldLastPlayerPos.y) > 150;
-    if (!s.flowFieldData || !s.flowFieldLastUpdate || 
-        s.t - s.flowFieldLastUpdate > 0.5 || playerMoved) {
-      if (s.levelData) {
-        // Use grid size (50px) for balance between performance and navigation
-        s.flowFieldData = computeFlowField(p.x, p.y, s.levelData, 50);
-        s.flowFieldLastUpdate = s.t;
-        s.flowFieldLastPlayerPos = { x: p.x, y: p.y };
+    // Generate Flow Field once per frame (Dijkstra Map from player position)
+    // RESET STATE: Ensure old pathfindingGrid is completely overwritten (already handled by level generation)
+    if (s.levelData && s.levelData.pathfindingGrid) {
+      // #region agent log
+      const gridType = s.levelData.pathfindingGrid?.constructor?.name;
+      const isArray = Array.isArray(s.levelData.pathfindingGrid);
+      const hasLength = typeof s.levelData.pathfindingGrid?.length === 'number';
+      if (Math.random() < 0.1) {
+        fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'update:before_gen',message:'Before flow field generation',data:{playerX:p.x,playerY:p.y,hasGrid:!!s.levelData?.pathfindingGrid,gridType,isArray,hasLength,gridLength:s.levelData.pathfindingGrid?.length,firstRowIsArray:Array.isArray(s.levelData.pathfindingGrid?.[0])},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'F'})}).catch(()=>{});
       }
+      // #endregion
+      try {
+        s.flowFieldData = generateFlowField(
+          p.x,
+          p.y,
+          s.levelData.pathfindingGrid,
+          s.levelData.pathfindingGridSize || 10
+        );
+        // #region agent log
+        if (Math.random() < 0.1) {
+          fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'update:flow_field_gen',message:'Flow field generated',data:{playerX:p.x,playerY:p.y,hasFlowField:!!s.flowFieldData,hasGrid:!!s.levelData?.pathfindingGrid,gridSize:s.levelData?.pathfindingGridSize},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A'})}).catch(()=>{});
+        }
+        // #endregion
+      } catch (error) {
+        // Flow field generation failed - log error and set to null
+        console.error('Flow field generation error:', error);
+        s.flowFieldData = null;
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'update:flow_field_error',message:'Flow field generation failed',data:{error:error.message,playerX:p.x,playerY:p.y},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+      }
+    } else {
+      s.flowFieldData = null;
+      // #region agent log
+      if (Math.random() < 0.1) {
+        fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'update:no_flow_field',message:'Flow field not generated',data:{hasLevelData:!!s.levelData,hasGrid:!!s.levelData?.pathfindingGrid},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A'})}).catch(()=>{});
+      }
+      // #endregion
     }
 
     if (s.shakeT > 0) s.shakeT = Math.max(0, s.shakeT - dt);
@@ -4180,7 +4811,8 @@ export default function NeonPitRoguelikeV3() {
           const newJumpX = p.x + p.jumpVx * dt;
           const newJumpY = p.y + p.jumpVy * dt;
           
-          if (s.levelData && s.levelData.walkableAreas) {
+          // Apply jump movement with collision checks
+          if (s.levelData) {
             // Try X movement first
             if (isPointWalkable(newJumpX, p.y, s.levelData, p.r || 12)) {
               p.x = newJumpX;
@@ -4190,7 +4822,7 @@ export default function NeonPitRoguelikeV3() {
               p.y = newJumpY;
             }
           } else {
-            // Fallback to simple movement
+            // Fallback: no level data, allow movement
             p.x = newJumpX;
             p.y = newJumpY;
           }
@@ -4204,15 +4836,15 @@ export default function NeonPitRoguelikeV3() {
           if (Math.abs(p.jumpVy) < 1) p.jumpVy = 0;
         }
         
-        if (p.z < 0) {
-          p.z = 0;
-          p.jumpV = 0;
-          p.jumpT = 0;
-          p.jumpVx = 0;
-          p.jumpVy = 0;
-          // Set landing grace period to prevent immediate collision
-          p.jumpLandingGrace = 0.15; // 150ms grace period after landing
-        }
+      // Ground check
+      if (p.z < 0) {
+        p.z = 0;
+        p.jumpV = 0;
+        p.jumpT = 0;
+        p.jumpVx = 0;
+        p.jumpVy = 0;
+        p.jumpLandingGrace = 0.15;
+      }
       }
     } else if (p.z !== undefined && p.z > 0) {
       // Fall down if not jumping
@@ -4224,14 +4856,18 @@ export default function NeonPitRoguelikeV3() {
         const newJumpX = p.x + p.jumpVx * dt;
         const newJumpY = p.y + p.jumpVy * dt;
         
-        if (s.levelData && s.levelData.walkableAreas) {
+        // Apply jump movement with collision checks
+        if (s.levelData) {
+          // Try X movement first
           if (isPointWalkable(newJumpX, p.y, s.levelData, p.r || 12)) {
             p.x = newJumpX;
           }
+          // Then try Y movement
           if (isPointWalkable(p.x, newJumpY, s.levelData, p.r || 12)) {
             p.y = newJumpY;
           }
         } else {
+          // Fallback: no level data, allow movement
           p.x = newJumpX;
           p.y = newJumpY;
         }
@@ -4244,16 +4880,20 @@ export default function NeonPitRoguelikeV3() {
         if (Math.abs(p.jumpVy) < 1) p.jumpVy = 0;
       }
       
+      // Ground check during fall
       if (p.z < 0) {
         p.z = 0;
         p.jumpV = 0;
         p.jumpVx = 0;
         p.jumpVy = 0;
-        // Set landing grace period to prevent immediate collision
-        p.jumpLandingGrace = 0.15; // 150ms grace period after landing
+        p.jumpLandingGrace = 0.15;
       }
     } else {
-      // On ground, clear horizontal jump velocity
+      // On ground, ensure z is 0
+      if (p.z === undefined || p.z > 0) {
+        p.z = 0;
+      }
+      // Clear horizontal jump velocity
       if (p.jumpVx !== undefined) p.jumpVx = 0;
       if (p.jumpVy !== undefined) p.jumpVy = 0;
     }
@@ -4341,29 +4981,60 @@ export default function NeonPitRoguelikeV3() {
     if (Math.abs(p.knockbackVy) < 1) p.knockbackVy = 0;
 
     // Try to move player (movement + knockback)
-    const newX = p.x + (baseVx + p.knockbackVx) * dt;
-    const newY = p.y + (baseVy + p.knockbackVy) * dt;
+    // Separate movement and knockback to ensure knockback respects walls
+    const playerRadius = p.r || 12;
     
-    // Check if new position is walkable
-    if (s.levelData && s.levelData.walkableAreas) {
-      // Try X movement first
-      if (isPointWalkable(newX, p.y, s.levelData, p.r || 12)) {
+    // First, try regular movement
+    const newX = p.x + baseVx * dt;
+    const newY = p.y + baseVy * dt;
+    
+    // Check collision for X movement
+    if (s.levelData) {
+      if (isPointWalkable(newX, p.y, s.levelData, playerRadius)) {
         p.x = newX;
       }
-      // Then try Y movement
-      if (isPointWalkable(p.x, newY, s.levelData, p.r || 12)) {
+      // Check collision for Y movement
+      if (isPointWalkable(p.x, newY, s.levelData, playerRadius)) {
         p.y = newY;
       }
-      // If both failed, try to find nearest walkable position
-      if (!isPointWalkable(p.x, p.y, s.levelData, p.r || 12)) {
-        const walkable = findNearestWalkable(p.x, p.y, s.levelData, p.r || 12);
-        p.x = walkable.x;
-        p.y = walkable.y;
-      }
     } else {
-      // Fallback to simple bounds clamping
-      p.x = clamp(newX, padding, (s.levelData ? s.levelData.w : w) - padding);
-      p.y = clamp(newY, padding, (s.levelData ? s.levelData.h : h) - padding);
+      // Fallback: no level data, allow movement
+      p.x = newX;
+      p.y = newY;
+    }
+    
+    // Apply knockback, but only if it doesn't push through walls
+    if (p.knockbackVx !== 0 || p.knockbackVy !== 0) {
+      const knockbackX = p.x + p.knockbackVx * dt;
+      const knockbackY = p.y + p.knockbackVy * dt;
+      
+      if (s.levelData) {
+        // Try knockback X movement
+        if (isPointWalkable(knockbackX, p.y, s.levelData, playerRadius)) {
+          p.x = knockbackX;
+        } else {
+          // Knockback hit a wall, stop knockback in that direction
+          p.knockbackVx = 0;
+        }
+        // Try knockback Y movement
+        if (isPointWalkable(p.x, knockbackY, s.levelData, playerRadius)) {
+          p.y = knockbackY;
+        } else {
+          // Knockback hit a wall, stop knockback in that direction
+          p.knockbackVy = 0;
+        }
+      } else {
+        // Fallback: apply knockback
+        p.x = knockbackX;
+        p.y = knockbackY;
+      }
+    }
+    
+    // Final safety check: if player ended up in a wall, find nearest walkable position
+    if (s.levelData && !isPointWalkable(p.x, p.y, s.levelData, playerRadius)) {
+      const walkable = findNearestWalkable(p.x, p.y, s.levelData, playerRadius);
+      p.x = walkable.x;
+      p.y = walkable.y;
     }
 
     const haste = p.buffHasteT > 0 ? p.buffHasteMult : 1;
@@ -4462,32 +5133,29 @@ export default function NeonPitRoguelikeV3() {
       // Line of sight check (only check if within reasonable distance)
       const hasLOS = d < 800 && hasLineOfSight(e.x, e.y, p.x, p.y, s.levelData, 10);
       
-      // Always move toward player using pathfinding (no states, no LOS checks for movement)
+      // FLOW FIELD PATHFINDING - Use flow field direction (no direct player reference)
       let moveDirX = 0;
       let moveDirY = 0;
       
-      // Always use pathfinding for better navigation around walls
+      // Get movement direction from flow field
       if (s.flowFieldData) {
-        const flowDir = getFlowFieldDirection(e.x, e.y, s.flowFieldData);
-        // If flow field returns zero vector, fall back to direct movement
-        if (flowDir.x === 0 && flowDir.y === 0) {
-          moveDirX = dx / d;
-          moveDirY = dy / d;
-        } else {
-          moveDirX = flowDir.x;
-          moveDirY = flowDir.y;
+        const flowDir = getFlowDirection(e.x, e.y, s.flowFieldData);
+        moveDirX = flowDir.x;
+        moveDirY = flowDir.y;
+        // #region agent log
+        if (Math.random() < 0.01) { // Sample 1% of enemies to avoid log spam
+          fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'enemy:flow_field',message:'Enemy using flow field',data:{enemyX:e.x,enemyY:e.y,flowDirX:flowDir.x,flowDirY:flowDir.y,moveDirX,moveDirY},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
         }
+        // #endregion
       } else {
-        // Fallback to direct movement if no flow field
+        // No flow field - fallback to direct movement
         moveDirX = dx / d;
         moveDirY = dy / d;
-      }
-      
-      // If stuck for a while and pathfinding isn't working, try direct movement toward player
-      if (e.stuckT > 0.4 && (moveDirX === 0 && moveDirY === 0 || Math.abs(moveDirX) < 0.1 && Math.abs(moveDirY) < 0.1)) {
-        // Pathfinding failed - try direct movement as last resort
-        moveDirX = dx / d;
-        moveDirY = dy / d;
+        // #region agent log
+        if (Math.random() < 0.01) { // Sample 1% of enemies
+          fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'enemy:fallback',message:'Enemy using fallback direct movement',data:{enemyX:e.x,enemyY:e.y,hasFlowField:!!s.flowFieldData,moveDirX,moveDirY},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        }
+        // #endregion
       }
       
       const ux = moveDirX;
@@ -4509,9 +5177,9 @@ export default function NeonPitRoguelikeV3() {
         if (!e.lastY) e.lastY = e.y;
         if (!e.stuckT) e.stuckT = 0;
         
-        // Check if enemy is stuck (hasn't moved much in 0.3 seconds)
+        // Check if enemy is stuck (hasn't moved much - more sensitive detection)
         const movedDist = Math.hypot(e.x - e.lastX, e.y - e.lastY);
-        if (movedDist < 3) { // Reduced threshold - more sensitive stuck detection
+        if (movedDist < 2) { // More sensitive - detect stuck faster
           e.stuckT += dt;
         } else {
           e.stuckT = 0; // Reset stuck timer if moving
@@ -4521,105 +5189,69 @@ export default function NeonPitRoguelikeV3() {
         const newEx = e.x + ux * moveSpeed;
         const newEy = e.y + uy * moveSpeed;
         
-        // Check if new position is walkable
-        if (s.levelData && s.levelData.walkableAreas) {
-          let movedX = false;
-          let movedY = false;
-          
-          // Use smaller radius for pathfinding (5) so enemies can navigate through tight spaces
-          // This allows them to follow the same paths as the player
-          const pathfindingRadius = 5; // Smaller than collision radius for better navigation
-          
-          // Try X movement first
-          if (isPointWalkable(newEx, e.y, s.levelData, pathfindingRadius)) {
+        // Move enemy with collision checks (same system as player)
+        const enemyRadius = e.r || 14;
+        let movedX = false;
+        let movedY = false;
+        
+        if (s.levelData) {
+          // Try diagonal movement first (better for corners)
+          if (isPointWalkable(newEx, newEy, s.levelData, enemyRadius)) {
             e.x = newEx;
-            movedX = true;
-          } else {
-            // X movement blocked - try multiple escape strategies
-            // Strategy 1: Try perpendicular movement
-            if (Math.abs(uy) > 0.1) {
-              const perpX = e.x + uy * moveSpeed * 0.7;
-              if (isPointWalkable(perpX, e.y, s.levelData, pathfindingRadius)) {
-                e.x = perpX;
-                movedX = true;
-              }
-            }
-            // Strategy 2: If stuck, try backing away slightly
-            if (!movedX && e.stuckT > 0.2) {
-              const backX = e.x - ux * moveSpeed * 0.5;
-              if (isPointWalkable(backX, e.y, s.levelData, pathfindingRadius)) {
-                e.x = backX;
-                movedX = true;
-              }
-            }
-            // Strategy 3: Try moving directly toward player if pathfinding fails
-            if (!movedX && e.stuckT > 0.3) {
-              const directX = e.x + (dx / d) * moveSpeed * 0.3;
-              if (isPointWalkable(directX, e.y, s.levelData, pathfindingRadius)) {
-                e.x = directX;
-                movedX = true;
-              }
-            }
-          }
-          
-          // Then try Y movement
-          if (isPointWalkable(e.x, newEy, s.levelData, pathfindingRadius)) {
             e.y = newEy;
+            movedX = true;
             movedY = true;
           } else {
-            // Y movement blocked - try multiple escape strategies
-            if (Math.abs(ux) > 0.1) {
-              const perpY = e.y + ux * moveSpeed * 0.7;
-              if (isPointWalkable(e.x, perpY, s.levelData, pathfindingRadius)) {
+            // Diagonal blocked, try X and Y separately
+            if (isPointWalkable(newEx, e.y, s.levelData, enemyRadius)) {
+              e.x = newEx;
+              movedX = true;
+            }
+            if (isPointWalkable(e.x, newEy, s.levelData, enemyRadius)) {
+              e.y = newEy;
+              movedY = true;
+            }
+            
+            // If stuck at corner, try wall sliding (perpendicular movement)
+            if (!movedX && !movedY && e.stuckT > 0.1) {
+              // Try moving perpendicular to desired direction (wall sliding)
+              const perpX = e.x + uy * moveSpeed * 0.8;
+              const perpY = e.y - ux * moveSpeed * 0.8;
+              if (isPointWalkable(perpX, perpY, s.levelData, enemyRadius)) {
+                e.x = perpX;
                 e.y = perpY;
+                movedX = true;
                 movedY = true;
-              }
-            }
-            // Strategy 2: If stuck, try backing away slightly
-            if (!movedY && e.stuckT > 0.2) {
-              const backY = e.y - uy * moveSpeed * 0.5;
-              if (isPointWalkable(e.x, backY, s.levelData, pathfindingRadius)) {
-                e.y = backY;
-                movedY = true;
-              }
-            }
-            // Strategy 3: Try moving directly toward player if pathfinding fails
-            if (!movedY && e.stuckT > 0.3) {
-              const directY = e.y + (dy / d) * moveSpeed * 0.3;
-              if (isPointWalkable(e.x, directY, s.levelData, pathfindingRadius)) {
-                e.y = directY;
-                movedY = true;
+              } else {
+                // Try opposite perpendicular
+                const perpX2 = e.x - uy * moveSpeed * 0.8;
+                const perpY2 = e.y + ux * moveSpeed * 0.8;
+                if (isPointWalkable(perpX2, perpY2, s.levelData, enemyRadius)) {
+                  e.x = perpX2;
+                  e.y = perpY2;
+                  movedX = true;
+                  movedY = true;
+                }
               }
             }
           }
-          
-          // If still stuck after 0.2 seconds, teleport to nearest walkable position
-          // More aggressive unstuck to prevent enemies from getting stuck
-          if (e.stuckT > 0.2) {
-            const walkable = findNearestWalkable(e.x, e.y, s.levelData, pathfindingRadius);
-            e.x = walkable.x;
-            e.y = walkable.y;
-            e.stuckT = 0; // Reset stuck timer after teleport
-            e.lastX = e.x; // Update last position
-            e.lastY = e.y;
-          } else if (!isPointWalkable(e.x, e.y, s.levelData, pathfindingRadius)) {
-            // If not stuck but in unwalkable position, find nearest walkable immediately
-            const walkable = findNearestWalkable(e.x, e.y, s.levelData, pathfindingRadius);
-            e.x = walkable.x;
-            e.y = walkable.y;
-            e.lastX = e.x;
-            e.lastY = e.y;
-          }
-          
-          // Update last position for stuck detection
-          e.lastX = e.x;
-          e.lastY = e.y;
         } else {
+          // Fallback: no level data, allow movement
           e.x = newEx;
           e.y = newEy;
-          e.lastX = e.x;
-          e.lastY = e.y;
+          movedX = true;
+          movedY = true;
         }
+        
+        // Final safety check: if enemy ended up in a wall, find nearest walkable position
+        if (s.levelData && !isPointWalkable(e.x, e.y, s.levelData, enemyRadius)) {
+          const walkable = findNearestWalkable(e.x, e.y, s.levelData, enemyRadius);
+          e.x = walkable.x;
+          e.y = walkable.y;
+        }
+        
+        e.lastX = e.x;
+        e.lastY = e.y;
 
         // Spitter shooting (only if we have line of sight)
         if (e.tier === "spitter" && d < 460 && e.spitT <= 0 && hasLOS) {
@@ -4642,29 +5274,63 @@ export default function NeonPitRoguelikeV3() {
       if (p.jumpLandingGrace !== undefined && p.jumpLandingGrace > 0) {
         // Just landed, skip collision during grace period
       } else {
-        const overlapped = resolveKinematicCircleOverlap(p, e, levelBounds);
-        // Always apply damage when in contact (reduced contactCd for more frequent hits)
-      if (overlapped && e.contactCd <= 0) {
-        const xNorm = clamp((p.x / (s.arena.w || 1)) * 2 - 1, -1, 1);
-        // Elite enemies deal more contact damage (but half damage for contact)
-        const baseDmg = 18 + s.floor * 0.9;
-        const eliteDmgMult = e.isElite ? (e.eliteAbility === "rage" ? 1 + (1 - e.hp / e.maxHp) * 0.5 : 1.3) : 1;
-        const contactDmg = (baseDmg * eliteDmgMult) * 0.5; // Half damage for contact
-        const did = applyPlayerDamage(s, contactDmg, `${e.tier} contact`, { shakeMag: 1.6, shakeTime: 0.06, hitStop: 0, fromX: e.x, fromY: e.y });
-        if (did) sfxHit(xNorm);
-        e.contactCd = 0.6; // Reduced from 0.95 to allow more frequent hits when in contact
+        const overlapped = resolveKinematicCircleOverlap(p, e, levelBounds, s.levelData);
         
-        // Apply knockback to player (away from enemy)
-        const dd = Math.hypot(e.x - p.x, e.y - p.y) || 1;
-        const knockbackForce = 180; // Knockback force
-        if (!p.knockbackVx) p.knockbackVx = 0;
-        if (!p.knockbackVy) p.knockbackVy = 0;
-        p.knockbackVx += ((p.x - e.x) / dd) * knockbackForce;
-        p.knockbackVy += ((p.y - e.y) / dd) * knockbackForce;
+        // Melee damage: Only apply to melee enemies (brute, runner, tank, and default/grunt) when actually overlapping
+        // Ranged enemies (spitter, shocker) should not deal contact damage
+        // Default enemy type (grunt) is melee - all enemies except spitter and shocker can melee
+        const checkBrute = e.tier === "brute";
+        const checkRunner = e.tier === "runner";
+        const checkTank = e.tier === "tank";
+        const checkNotRanged = (e.tier !== "spitter" && e.tier !== "shocker");
+        const isMeleeEnemy = checkBrute || checkRunner || checkTank || checkNotRanged;
         
-        // Push enemy back slightly
-        e.x += ((e.x - p.x) / dd) * 22;
-        e.y += ((e.y - p.y) / dd) * 22;
+        // #region agent log
+        if (e.r <= 15) {
+          const dx = p.x - e.x;
+          const dy = p.y - e.y;
+          const dist = Math.hypot(dx, dy);
+          const pVisualR = getVisualCubeRadius(p.r || 14);
+          const eVisualR = getVisualCubeRadius(e.r);
+          const canDamage = overlapped && isMeleeEnemy && (e.contactCd === undefined || e.contactCd <= 0);
+          fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'enemy:damage_check',message:'Damage check for small enemy',data:{tier:e.tier,enemyR:e.r,enemyVisualR:eVisualR,playerR:p.r||14,playerVisualR:pVisualR,overlapped,isMeleeEnemy,checkBrute,checkRunner,checkTank,checkNotRanged,contactCd:e.contactCd,dist:dist.toFixed(2),minDist:(pVisualR+eVisualR).toFixed(2),canDamage,blockedByOverlap:!overlapped,blockedByMelee:!isMeleeEnemy,blockedByCooldown:(e.contactCd!==undefined&&e.contactCd>0)},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'H5'})}).catch(()=>{});
+        }
+        // #endregion
+        
+        // Apply damage if overlapping, is melee enemy, and cooldown is ready
+        // Note: overlapped is true when visual cubes are touching (from resolveKinematicCircleOverlap)
+        // If enemy is pushing player, they should be able to deal damage
+        // Check contactCd with undefined safety
+        // If overlapped is true, that means visual cubes are touching, so damage should apply
+        // No need for additional distance check - overlapped already confirms they're touching
+        if (overlapped && isMeleeEnemy && (e.contactCd === undefined || e.contactCd <= 0)) {
+          // #region agent log
+          if (e.r <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'enemy:damage_applied',message:'Damage being applied to player',data:{tier:e.tier,enemyR:e.r,enemyVisualR:getVisualCubeRadius(e.r),playerR:p.r||14,playerVisualR:getVisualCubeRadius(p.r||14),damage:((18+s.floor*0.9)*0.5).toFixed(1)},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'C'})}).catch(()=>{});
+          // #endregion
+          const dx = p.x - e.x;
+          const dy = p.y - e.y;
+          const dist = Math.hypot(dx, dy) || 1;
+          // Enemy is overlapping and close enough - apply damage and knockback
+          
+          const xNorm = clamp((p.x / (s.arena.w || 1)) * 2 - 1, -1, 1);
+          // Elite enemies deal more contact damage (but half damage for contact)
+          const baseDmg = 18 + s.floor * 0.9;
+          const eliteDmgMult = e.isElite ? (e.eliteAbility === "rage" ? 1 + (1 - e.hp / e.maxHp) * 0.5 : 1.3) : 1;
+          const contactDmg = (baseDmg * eliteDmgMult) * 0.5; // Half damage for contact
+          const did = applyPlayerDamage(s, contactDmg, `${e.tier} contact`, { shakeMag: 1.6, shakeTime: 0.06, hitStop: 0, fromX: e.x, fromY: e.y });
+          if (did) sfxHit(xNorm);
+          e.contactCd = 0.6; // Reduced from 0.95 to allow more frequent hits when in contact
+          
+          // Apply knockback to player (away from enemy)
+          const knockbackForce = 90; // Reduced from 180 for less aggressive knockback
+          if (!p.knockbackVx) p.knockbackVx = 0;
+          if (!p.knockbackVy) p.knockbackVy = 0;
+          p.knockbackVx += ((p.x - e.x) / dist) * knockbackForce;
+          p.knockbackVy += ((p.y - e.y) / dist) * knockbackForce;
+          
+          // Push enemy back slightly
+          e.x += ((e.x - p.x) / dist) * 22;
+          e.y += ((e.y - p.y) / dist) * 22;
         }
       }
     }
@@ -4817,15 +5483,58 @@ export default function NeonPitRoguelikeV3() {
         const newX = b.x + b.vx * dt;
         const newY = b.y + b.vy * dt;
         
-        // Check wall collision for explosive bullets (they can't go through walls)
-        if (b.explosive && s.levelData && s.levelData.walkableAreas) {
-          if (!isPointWalkable(newX, newY, s.levelData, b.r || 7)) {
+        // Check wall collision for all bullets (they can't go through walls)
+        if (s.levelData) {
+          // Use bullet radius for wall check
+          const bulletRadius = b.r || 4;
+          if (!isPointWalkable(newX, newY, s.levelData, bulletRadius)) {
             // Hit a wall, destroy bullet
+            // For splash weapons, trigger splash damage on wall hit
+            if (!b.enemy && b.splashR > 0) {
+              const r2 = b.splashR * b.splashR;
+              let hitAny = false;
+              for (const ee of s.enemies) {
+                if (ee.hp <= 0) continue;
+                if (dist2(ee.x, ee.y, b.x, b.y) <= r2) {
+                  ee.hp -= b.dmg * 0.65;
+                  ee.hitT = 0.12;
+                  hitAny = true;
+                  const dealt = Math.max(1, Math.round(b.dmg * 0.65));
+                  pushCombatText(s, ee.x, ee.y - 14, String(dealt), "#ff7a3d", { size: 12, life: 0.75 });
+                  
+                  // Apply poison to all enemies hit by splash (for poison flask)
+                  if (b.effect === "poison") {
+                    const poisonDuration = 3.5;
+                    const poisonDpsMult = 0.4;
+                    ee.poisonT = Math.max(ee.poisonT || 0, poisonDuration);
+                    ee.poisonDps = Math.max(ee.poisonDps || 0, Math.max(3, b.dmg * poisonDpsMult));
+                  }
+                }
+              }
+              if (s.boss.active) {
+                const bossD2 = dist2(s.boss.x, s.boss.y, b.x, b.y);
+                if (bossD2 <= r2) {
+                  s.boss.hp -= b.dmg * 0.65;
+                  hitAny = true;
+                  const dealt = Math.max(1, Math.round(b.dmg * 0.65));
+                  pushCombatText(s, s.boss.x, s.boss.y - s.boss.r - 10, String(dealt), "#ff7a3d", { size: 12, life: 0.75 });
+                  
+                  // Apply poison to boss hit by splash (for poison flask)
+                  if (b.effect === "poison") {
+                    // Boss poison handling would go here if needed
+                  }
+                }
+              }
+              if (hitAny) {
+                addParticle(s, b.x, b.y, 10, 30);
+              }
+            }
             b.t = b.life + 1;
             continue;
           }
         }
         
+        // Apply bullet movement
         b.x = newX;
         b.y = newY;
       }
@@ -5036,11 +5745,14 @@ export default function NeonPitRoguelikeV3() {
             b.explodeAfter = 2.0; // Start 2 second countdown
           hitSomething = true;
             
-            // Reset cooldown to full 8 seconds when bullet injects
+            // Start cooldown when bullet injects (only if not already on cooldown)
             if (b.playerAbilityRef) {
               const p = b.playerAbilityRef;
-              // Reset to full cooldown (8 seconds)
-              p.abilityT = p.abilityCd * (p.abilityCdMult || 1);
+              // Start cooldown (8 seconds base, modified by cooldown multiplier)
+              // Only start if not already on cooldown (to prevent resetting)
+              if (p.abilityT <= 0) {
+                p.abilityT = p.abilityCd * (p.abilityCdMult || 1);
+              }
               b.playerAbilityRef = null; // Clear reference
             }
             
@@ -5080,6 +5792,16 @@ export default function NeonPitRoguelikeV3() {
           
           e.hp -= finalDmg;
           e.hitT = 0.12;
+          
+          // Apply lifesteal if player has it
+          if (p.lifesteal > 0) {
+            const healAmount = finalDmg * p.lifesteal;
+            p.hp = Math.min(p.maxHp, p.hp + healAmount);
+            // Visual feedback for lifesteal
+            if (healAmount > 0.5) {
+              pushCombatText(s, p.x, p.y - 30, `+${Math.round(healAmount)}`, "#4dff88", { size: 10, life: 0.6 });
+            }
+          }
 
           // Add hit flash
           addHitFlash(s, e.x, e.y, (isBigBonk || b.crit) ? "#ffd44a" : "#ffffff");
@@ -5593,7 +6315,7 @@ export default function NeonPitRoguelikeV3() {
 
       const enr = s.boss.hp / s.boss.maxHp < 0.35;
       s.boss.enraged = enr;
-      const bossSpeed = (120 + s.floor * 5) * (enr ? 1.2 : 1);
+      const bossSpeed = (84 + s.floor * 3.5) * (enr ? 1.2 : 1); // Reduced by ~30% for slower-paced gameplay
 
       s.boss.x += ux * bossSpeed * dt;
       s.boss.y += uy * bossSpeed * dt;
@@ -5608,13 +6330,17 @@ export default function NeonPitRoguelikeV3() {
 
       s.boss.spitT = Math.max(0, s.boss.spitT - dt);
       if (s.boss.spitT <= 0) {
-        const a = Math.atan2(dy, dx);
-        const shots = enr ? 3 : 2;
-        for (let i = 0; i < shots; i++) {
-          const aa = a + lerp(-0.22, 0.22, shots === 1 ? 0.5 : i / (shots - 1));
-          shootBullet(s, s.boss.x, s.boss.y, aa, 18 + s.floor * 1.2, 520, { enemy: true, r: 8.2, life: 2.2, color: "#ff5d5d" });
+        // Check line of sight before boss can shoot
+        const bossHasLOS = !s.levelData || hasLineOfSight(s.boss.x, s.boss.y, p.x, p.y, s.levelData, 10);
+        if (bossHasLOS) {
+          const a = Math.atan2(dy, dx);
+          const shots = enr ? 3 : 2;
+          for (let i = 0; i < shots; i++) {
+            const aa = a + lerp(-0.22, 0.22, shots === 1 ? 0.5 : i / (shots - 1));
+            shootBullet(s, s.boss.x, s.boss.y, aa, 18 + s.floor * 1.2, 520, { enemy: true, r: 8.2, life: 2.2, color: "#ff5d5d" });
+          }
+          s.boss.spitT = enr ? 0.55 : 0.85;
         }
-        s.boss.spitT = enr ? 0.55 : 0.85;
       }
 
       const bossBounds = s.levelData ? {
@@ -5627,7 +6353,7 @@ export default function NeonPitRoguelikeV3() {
       if (p.jumpLandingGrace !== undefined && p.jumpLandingGrace > 0) {
         // Just landed, skip collision during grace period
       } else {
-        const overlapped = resolveKinematicCircleOverlap(p, s.boss, bossBounds);
+        const overlapped = resolveKinematicCircleOverlap(p, s.boss, bossBounds, s.levelData);
       if (overlapped) {
         const xNorm = clamp((p.x / (s.arena.w || 1)) * 2 - 1, -1, 1);
           const did = applyPlayerDamage(s, 30 + s.floor * 1.1, "boss contact", { shakeMag: 2.2, shakeTime: 0.07, hitStop: 0.01, fromX: s.boss.x, fromY: s.boss.y });
@@ -5691,7 +6417,7 @@ export default function NeonPitRoguelikeV3() {
           p.y = clamp(startRoom.y + startRoom.h / 2, startRoom.y + padding, startRoom.y + startRoom.h - padding);
           
           // Ensure player is in walkable area
-          if (s.levelData.walkableAreas && !isPointWalkable(p.x, p.y, s.levelData, p.r || 12)) {
+          if (s.levelData && !isPointWalkable(p.x, p.y, s.levelData, p.r || 12)) {
             const walkable = findNearestWalkable(p.x, p.y, s.levelData, p.r || 12);
             p.x = walkable.x;
             p.y = walkable.y;
@@ -5892,17 +6618,19 @@ export default function NeonPitRoguelikeV3() {
         const bgRect = { x: 0, y: 0, w: s.levelData.w, h: s.levelData.h };
         drawIsometricRectangle(ctx, bgRect, `hsl(${bgHue}, ${bgSat}%, ${bgLight}%)`, cam.x, cam.y, w, h, scale);
         
-        // Draw corridors first (lighter, so they appear as connections)
+        // Draw all walkable areas with unified color (no distinction between rooms and corridors)
+        // Draw using exact coordinates to match collision geometry - no visual-only expansion
+        const unifiedColor = `hsl(${roomHue}, ${roomSat}%, ${roomLight}%)`;
         if (s.levelData.corridors && s.levelData.corridors.length > 0) {
           for (const corr of s.levelData.corridors) {
-            drawIsometricRectangle(ctx, corr, `hsl(${roomHue}, ${roomSat}%, ${corrLight}%)`, cam.x, cam.y, w, h, scale);
+            // Draw corridor using exact coordinates (matches collision geometry)
+            drawIsometricRectangle(ctx, corr, unifiedColor, cam.x, cam.y, w, h, scale);
           }
         }
-        
-        // Draw rooms on top (main walkable areas)
         if (s.levelData.rooms && s.levelData.rooms.length > 0) {
           for (const room of s.levelData.rooms) {
-            drawIsometricRectangle(ctx, room, `hsl(${roomHue}, ${roomSat}%, ${roomLight}%)`, cam.x, cam.y, w, h, scale);
+            // Draw room using exact coordinates (matches collision geometry)
+            drawIsometricRectangle(ctx, room, unifiedColor, cam.x, cam.y, w, h, scale);
           }
         }
       } else {
@@ -5910,18 +6638,18 @@ export default function NeonPitRoguelikeV3() {
         // Fill entire level area
         ctx.fillRect(0, 0, s.levelData.w, s.levelData.h);
         
-        // Draw corridors first (lighter, so they appear as connections)
+        // Draw all walkable areas with unified color (no distinction between rooms and corridors)
+        // Draw using exact coordinates to match collision geometry - no visual-only expansion
+        ctx.fillStyle = `hsl(${roomHue}, ${roomSat}%, ${roomLight}%)`;
         if (s.levelData.corridors && s.levelData.corridors.length > 0) {
-          ctx.fillStyle = `hsl(${roomHue}, ${roomSat}%, ${corrLight}%)`;
           for (const corr of s.levelData.corridors) {
+            // Draw corridor using exact coordinates (matches collision geometry)
             ctx.fillRect(corr.x, corr.y, corr.w, corr.h);
           }
         }
-        
-        // Draw rooms on top (main walkable areas)
         if (s.levelData.rooms && s.levelData.rooms.length > 0) {
-          ctx.fillStyle = `hsl(${roomHue}, ${roomSat}%, ${roomLight}%)`;
           for (const room of s.levelData.rooms) {
+            // Draw room using exact coordinates (matches collision geometry)
             ctx.fillRect(room.x, room.y, room.w, room.h);
           }
         }
@@ -5939,55 +6667,69 @@ export default function NeonPitRoguelikeV3() {
       
       // Draw grass patches for visual variety
       if (s.levelData.grass && s.levelData.grass.length > 0) {
-        ctx.fillStyle = `hsl(${roomHue + 10}, ${roomSat + 5}%, ${roomLight + 2}%)`;
-        ctx.globalAlpha = 0.3;
+        ctx.fillStyle = `hsl(${roomHue + 10}, ${roomSat + 5}%, ${roomLight + 3}%)`;
+        ctx.globalAlpha = 0.5; // Increased visibility
         for (const patch of s.levelData.grass) {
-          ctx.beginPath();
-          ctx.arc(patch.x, patch.y, patch.r, 0, Math.PI * 2);
-          ctx.fill();
+          if (ISO_MODE) {
+            const { w, h } = s.arena;
+            const scale = isoScaleRef.current;
+            const patchIso = worldToIso(patch.x, patch.y, 0, scale);
+            const camIso = worldToIso(cam.x, cam.y, 0, scale);
+            const screenX = w / 2 + patchIso.x - camIso.x;
+            const screenY = h / 2 + patchIso.y - camIso.y;
+            ctx.beginPath();
+            ctx.arc(screenX, screenY, patch.r, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            ctx.beginPath();
+            ctx.arc(patch.x, patch.y, patch.r, 0, Math.PI * 2);
+            ctx.fill();
+          }
         }
         ctx.globalAlpha = 1;
       }
       
       // Draw rock decorations
       if (s.levelData.rocks && s.levelData.rocks.length > 0) {
-        ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 10}%, ${bgLight + 3}%)`;
-        ctx.globalAlpha = 0.6;
+        ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 10}%, ${bgLight + 5}%)`;
+        ctx.globalAlpha = 0.8; // Increased visibility
         for (const rock of s.levelData.rocks) {
-          ctx.beginPath();
-          ctx.arc(rock.x, rock.y, rock.r, 0, Math.PI * 2);
-          ctx.fill();
-          // Add some detail
-          ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 15}%, ${bgLight + 1}%)`;
-          ctx.beginPath();
-          ctx.arc(rock.x - rock.r * 0.3, rock.y - rock.r * 0.3, rock.r * 0.4, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 10}%, ${bgLight + 3}%)`;
+          if (ISO_MODE) {
+            const { w, h } = s.arena;
+            const scale = isoScaleRef.current;
+            const rockIso = worldToIso(rock.x, rock.y, 0, scale);
+            const camIso = worldToIso(cam.x, cam.y, 0, scale);
+            const screenX = w / 2 + rockIso.x - camIso.x;
+            const screenY = h / 2 + rockIso.y - camIso.y;
+            ctx.beginPath();
+            ctx.arc(screenX, screenY, rock.r, 0, Math.PI * 2);
+            ctx.fill();
+            // Add some detail
+            ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 15}%, ${bgLight + 2}%)`;
+            ctx.beginPath();
+            ctx.arc(screenX - rock.r * 0.3, screenY - rock.r * 0.3, rock.r * 0.4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 10}%, ${bgLight + 5}%)`;
+          } else {
+            ctx.beginPath();
+            ctx.arc(rock.x, rock.y, rock.r, 0, Math.PI * 2);
+            ctx.fill();
+            // Add some detail
+            ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 15}%, ${bgLight + 1}%)`;
+            ctx.beginPath();
+            ctx.arc(rock.x - rock.r * 0.3, rock.y - rock.r * 0.3, rock.r * 0.4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 10}%, ${bgLight + 5}%)`;
+          }
         }
         ctx.globalAlpha = 1;
       }
       
-      // Draw subtle borders around rooms and corridors (matching minimap)
-      ctx.strokeStyle = `hsl(${bgHue}, ${bgSat}%, ${bgLight - 3}%)`;
-      ctx.lineWidth = 2;
+      // No borders - unified floor design (removed puzzle piece lines)
       
-      // Draw borders around corridors first
-      if (s.levelData.corridors && s.levelData.corridors.length > 0) {
-        for (const corr of s.levelData.corridors) {
-          ctx.strokeRect(corr.x, corr.y, corr.w, corr.h);
-        }
-      }
-      
-      // Draw borders around rooms
-      if (s.levelData.rooms && s.levelData.rooms.length > 0) {
-        for (const room of s.levelData.rooms) {
-          ctx.strokeRect(room.x, room.y, room.w, room.h);
-        }
-      }
-      
-      // Draw outer boundary
-      ctx.strokeStyle = `hsl(${roomHue}, ${roomSat + 10}%, ${roomLight + 8}%)`;
-      ctx.lineWidth = 4;
+      // Draw outer boundary only (subtle edge)
+      ctx.strokeStyle = `hsl(${roomHue}, ${roomSat + 10}%, ${roomLight + 5}%)`;
+      ctx.lineWidth = 3;
       ctx.strokeRect(0, 0, s.levelData.w, s.levelData.h);
     } else {
       // Fallback if no level data
@@ -6849,7 +7591,9 @@ export default function NeonPitRoguelikeV3() {
     if (p.shield > 0) {
       ctx.strokeStyle = "#9cffd6";
       ctx.globalAlpha = 0.9;
-      ctx.lineWidth = 2;
+      // Shield thickness increases with charges: 1px base + 1px per charge (capped at reasonable max)
+      const shieldThickness = 1 + Math.min(p.shield, 10); // Max 11px thickness
+      ctx.lineWidth = shieldThickness;
       if (ISO_MODE) {
         const { w, h } = s.arena;
         const scale = isoScaleRef.current;
