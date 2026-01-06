@@ -13,9 +13,6 @@ export function getVisualRadius(entityRadius) {
   // For collision detection, we want the visual radius to match the cube size
   // Use 80% of original radius for all entities - this was working well for bounding box
   const visualR = entityRadius * 0.4;
-  // #region agent log
-  if (entityRadius <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getVisualCubeRadius:result',message:'Visual radius calculated',data:{entityRadius,visualR,percentage:(visualR/entityRadius*100).toFixed(1),multiplier:0.4},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H1'})}).catch(()=>{});
-  // #endregion
   return visualR;
 }
 
@@ -31,15 +28,8 @@ export function resolveKinematicOverlap(kin, dyn, bounds, levelData = null) {
   // Default: enemies can ALWAYS hit you when in contact
   // Only exception: at the absolute peak of a very high jump
   
-  // #region agent log
-  if (dyn.r <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'resolveKinematicCircleOverlap:entry',message:'Function entry for small enemy',data:{enemyR:dyn.r,playerR:kin.r||14,playerZ:kin.z||0,jumpLandingGrace:kin.jumpLandingGrace},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H2'})}).catch(()=>{});
-  // #endregion
-  
   // Landing grace period prevents immediate collision after landing
   if (kin.jumpLandingGrace !== undefined && kin.jumpLandingGrace > 0) {
-    // #region agent log
-    if (dyn.r <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'resolveKinematicCircleOverlap:grace_period',message:'Early return due to grace period',data:{enemyR:dyn.r,jumpLandingGrace:kin.jumpLandingGrace},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H2'})}).catch(()=>{});
-    // #endregion
     return false; // Grace period after landing
   }
   
@@ -50,9 +40,6 @@ export function resolveKinematicOverlap(kin, dyn, bounds, levelData = null) {
     // With baseJumpV = 160, max height is ~16, so z > 8 covers most of the jump arc
     if (kin.z > 8) {
       // High enough to clear enemies - safe
-      // #region agent log
-      if (dyn.r <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'resolveKinematicCircleOverlap:high_jump',message:'Early return due to high jump',data:{enemyR:dyn.r,playerZ:kin.z},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H2'})}).catch(()=>{});
-      // #endregion
       return false; // High enough to jump over enemies safely
     }
     // Low jump (z <= 8) - vulnerable (spam jump territory)
@@ -67,13 +54,7 @@ export function resolveKinematicOverlap(kin, dyn, bounds, levelData = null) {
   const kinVisualR = getVisualRadius(kin.r || 14);
   const dynVisualR = getVisualRadius(dyn.r || 14);
   const minD = kinVisualR + dynVisualR;
-  // #region agent log
-  if (dyn.r <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'resolveKinematicCircleOverlap:check',message:'Collision check for small enemy',data:{kinR:kin.r||14,kinVisualR,dynR:dyn.r,dynVisualR,dist:d,minDist:minD,overlaps:d<minD,playerZ:kin.z||0,distDiff:(d-minD).toFixed(3)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H1'})}).catch(()=>{});
-  // #endregion
   if (!(d < minD)) {
-    // #region agent log
-    if (dyn.r <= 15) fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'resolveKinematicCircleOverlap:no_overlap',message:'No overlap detected - returning false',data:{enemyR:dyn.r,dist:d,minDist:minD,distDiff:(d-minD).toFixed(3),tooFar:d>=minD},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H1'})}).catch(()=>{});
-    // #endregion
     return false;
   }
 
@@ -120,14 +101,6 @@ export function resolveKinematicOverlap(kin, dyn, bounds, levelData = null) {
     kin.y = walkable.y;
   }
   
-  // #region agent log
-  if (dyn.r <= 15) {
-    const finalDx = kin.x - dyn.x;
-    const finalDy = kin.y - dyn.y;
-    const finalD = Math.hypot(finalDx, finalDy);
-    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'resolveKinematicCircleOverlap:return_true',message:'Overlap detected - returning true',data:{enemyR:dyn.r,initialDist:d.toFixed(3),finalDist:finalD.toFixed(3),overlap:overlap.toFixed(3),minDist:minD.toFixed(3)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H1'})}).catch(()=>{});
-  }
-  // #endregion
   
   return true;
 }

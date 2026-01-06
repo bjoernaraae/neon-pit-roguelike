@@ -124,19 +124,10 @@ export function generateProceduralLevel(w, h, floor) {
   // VALIDATION: Check that pathfindingGrid is a proper 2D array before returning
   if (!Array.isArray(pathfindingGrid) || !Array.isArray(pathfindingGrid[0])) {
     console.error('GRID DATA ERROR: bspResult.grid is not a 2D array', pathfindingGrid);
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateProceduralLevel:grid_error',message:'Grid validation failed',data:{gridType:pathfindingGrid?.constructor?.name,isArray:Array.isArray(pathfindingGrid),hasFirstRow:!!pathfindingGrid?.[0],firstRowIsArray:Array.isArray(pathfindingGrid?.[0]),bspResultKeys:Object.keys(bspResult)},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'F'})}).catch(()=>{});
-    // #endregion
     // Fallback: create empty grid to prevent crash
     pathfindingGrid = [[1]]; // Single walkable cell as fallback
   }
   
-  // #region agent log
-  const gridType = pathfindingGrid?.constructor?.name;
-  const isArray = Array.isArray(pathfindingGrid);
-  const hasLength = typeof pathfindingGrid?.length === 'number';
-  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateProceduralLevel:pathfindingGrid',message:'Pathfinding grid stored',data:{gridType,isArray,hasLength,gridLength:pathfindingGrid?.length,firstRowIsArray:Array.isArray(pathfindingGrid?.[0]),firstRowLength:pathfindingGrid?.[0]?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'F'})}).catch(()=>{});
-  // #endregion
   
   return { 
     rooms, 

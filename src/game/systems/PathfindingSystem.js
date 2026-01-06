@@ -12,17 +12,11 @@
  * @returns {{distances: Array<Array<number>>, gridSize: number, gridW: number, gridH: number}|null} Flow field data or null if invalid
  */
 export function generateFlowField(targetX, targetY, grid, gridSize = 10) {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateFlowField:entry',message:'Flow field generation started',data:{targetX,targetY,gridSize,hasGrid:!!grid,gridType:grid?.constructor?.name,isArray:Array.isArray(grid),hasLength:typeof grid?.length==='number',gridH:grid?.length,gridW:grid?.[0]?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
   
   // CLEAN FLOW FIELD INPUT: Strict validation - must be a 2D array
   if (!Array.isArray(grid) || grid.length === 0) {
     const errorMsg = 'FLOW FIELD ERROR: grid must be a 2D array, got: ' + (grid?.constructor?.name || typeof grid);
     console.error(errorMsg, grid);
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateFlowField:error',message:'Grid is not an array',data:{hasGrid:!!grid,gridType:grid?.constructor?.name,isArray:Array.isArray(grid),error:errorMsg},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     throw new Error(errorMsg);
   }
   
@@ -30,9 +24,6 @@ export function generateFlowField(targetX, targetY, grid, gridSize = 10) {
   if (!Array.isArray(grid[0]) || grid[0].length === 0) {
     const errorMsg = 'FLOW FIELD ERROR: grid[0] must be an array, got: ' + (grid[0]?.constructor?.name || typeof grid[0]);
     console.error(errorMsg, grid[0]);
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateFlowField:error2',message:'Grid[0] is not an array',data:{hasGrid0:!!grid[0],grid0Type:grid[0]?.constructor?.name,isArray:Array.isArray(grid[0]),error:errorMsg},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     throw new Error(errorMsg);
   }
   
@@ -43,9 +34,39 @@ export function generateFlowField(targetX, targetY, grid, gridSize = 10) {
   const targetGridX = Math.floor(targetX / gridSize);
   const targetGridY = Math.floor(targetY / gridSize);
   
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateFlowField:coords',message:'Grid coordinates calculated',data:{targetGridX,targetGridY,gridW,gridH,isInBounds:targetGridY>=0&&targetGridY<gridH&&targetGridX>=0&&targetGridX<gridW,gridValue:targetGridY>=0&&targetGridY<gridH&&targetGridX>=0&&targetGridX<gridW?grid[targetGridY][targetGridX]:'out_of_bounds'},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
+  // Step 1: Build wall influence map (identify tiles adjacent to walls)
+  // Tiles adjacent to walls get higher traversal cost to curve paths away from corners
+  const wallInfluence = [];
+  const WALL_PENALTY = 2.5; // Cost multiplier for near-wall tiles
+  const BASE_COST = 1.0;    // Base cost for walkable tiles
+  
+  for (let y = 0; y < gridH; y++) {
+    wallInfluence[y] = [];
+    for (let x = 0; x < gridW; x++) {
+      if (grid[y][x] === 0) {
+        wallInfluence[y][x] = Infinity; // Wall itself
+        continue;
+      }
+      
+      // Check 8 neighbors for walls (cardinal + diagonal)
+      let adjacentWalls = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx >= 0 && nx < gridW && ny >= 0 && ny < gridH) {
+            if (grid[ny][nx] === 0) {
+              adjacentWalls++;
+            }
+          }
+        }
+      }
+      
+      // If adjacent to any wall, apply penalty
+      wallInfluence[y][x] = adjacentWalls > 0 ? WALL_PENALTY : BASE_COST;
+    }
+  }
   
   // Initialize distance map with Infinity (walls have infinite cost)
   const distances = [];
@@ -87,14 +108,12 @@ export function generateFlowField(targetX, targetY, grid, gridSize = 10) {
   distances[startY][startX] = 0;
   queue.push({ x: startX, y: startY });
   
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateFlowField:bfs_start',message:'BFS started',data:{startX,startY,queueLength:queue.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'C'})}).catch(()=>{});
-  // #endregion
-  
   // 8-directional movement for better pathfinding
-  const dirs = [
-    [0, 1, 1.0], [1, 0, 1.0], [0, -1, 1.0], [-1, 0, 1.0], // Cardinal (cost 1.0)
-    [1, 1, 1.414], [1, -1, 1.414], [-1, -1, 1.414], [-1, 1, 1.414] // Diagonal (cost sqrt(2))
+  const cardinalDirs = [
+    [0, 1, 1.0], [1, 0, 1.0], [0, -1, 1.0], [-1, 0, 1.0] // Cardinal directions
+  ];
+  const diagonalDirs = [
+    [1, 1, 1.414], [1, -1, 1.414], [-1, -1, 1.414], [-1, 1, 1.414] // Diagonal directions
   ];
   
   // BFS to fill distance map
@@ -104,7 +123,8 @@ export function generateFlowField(targetX, targetY, grid, gridSize = 10) {
     const currentDist = distances[current.y][current.x];
     processedCells++;
     
-    for (const [dx, dy, cost] of dirs) {
+    // Step 3: Process cardinal directions first
+    for (const [dx, dy, baseCost] of cardinalDirs) {
       const nx = current.x + dx;
       const ny = current.y + dy;
       
@@ -114,8 +134,50 @@ export function generateFlowField(targetX, targetY, grid, gridSize = 10) {
       // Only process walkable tiles (value = 1)
       if (grid[ny][nx] !== 1) continue; // Walls have infinite cost (already set)
       
+      // Step 1: Apply wall influence cost penalty
+      const tileWeight = wallInfluence[ny][nx];
+      const moveCost = baseCost * tileWeight;
+      
       // Update distance if we found a shorter path
-      const newDist = currentDist + cost;
+      const newDist = currentDist + moveCost;
+      if (newDist < distances[ny][nx]) {
+        distances[ny][nx] = newDist;
+        queue.push({ x: nx, y: ny });
+      }
+    }
+    
+    // Step 3: Process diagonal directions with strict validation
+    for (const [dx, dy, baseCost] of diagonalDirs) {
+      const nx = current.x + dx;
+      const ny = current.y + dy;
+      
+      // Bounds check
+      if (ny < 0 || ny >= gridH || nx < 0 || nx >= gridW) continue;
+      
+      // Only process walkable tiles (value = 1)
+      if (grid[ny][nx] !== 1) continue; // Walls have infinite cost (already set)
+      
+      // Step 3: Strict diagonal validation - only allow if both adjacent cardinals are walkable
+      // Check the two cardinal neighbors that form the diagonal
+      const card1X = current.x + dx; // One cardinal component
+      const card1Y = current.y;
+      const card2X = current.x;
+      const card2Y = current.y + dy; // Other cardinal component
+      
+      // Both cardinal tiles must be walkable
+      const card1Walkable = card1X >= 0 && card1X < gridW && card1Y >= 0 && card1Y < gridH && grid[card1Y][card1X] === 1;
+      const card2Walkable = card2X >= 0 && card2X < gridW && card2Y >= 0 && card2Y < gridH && grid[card2Y][card2X] === 1;
+      
+      if (!card1Walkable || !card2Walkable) {
+        continue; // Skip this diagonal move - would clip through corner
+      }
+      
+      // Step 1: Apply wall influence cost penalty
+      const tileWeight = wallInfluence[ny][nx];
+      const moveCost = baseCost * tileWeight;
+      
+      // Update distance if we found a shorter path
+      const newDist = currentDist + moveCost;
       if (newDist < distances[ny][nx]) {
         distances[ny][nx] = newDist;
         queue.push({ x: nx, y: ny });
@@ -123,15 +185,6 @@ export function generateFlowField(targetX, targetY, grid, gridSize = 10) {
     }
   }
   
-  // #region agent log
-  const sampleDistances = [];
-  for(let y=0;y<Math.min(5,gridH);y++) {
-    for(let x=0;x<Math.min(5,gridW);x++) {
-      sampleDistances.push({x,y,dist:distances[y][x],grid:grid[y][x]});
-    }
-  }
-  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'generateFlowField:bfs_end',message:'BFS completed',data:{processedCells,queueLength:queue.length,sampleDistances},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'C'})}).catch(()=>{});
-  // #endregion
   
   return {
     distances,
@@ -143,21 +196,15 @@ export function generateFlowField(targetX, targetY, grid, gridSize = 10) {
 
 /**
  * Get flow direction vector for a given world position
- * Returns normalized vector pointing toward neighbor with lowest distance
+ * Uses bilinear interpolation with gradient vector calculation for smooth sub-tile steering
  * @param {number} x - World X coordinate
  * @param {number} y - World Y coordinate
  * @param {object} flowFieldData - Flow field data from generateFlowField
  * @returns {{x: number, y: number}} Normalized direction vector
  */
 export function getFlowDirection(x, y, flowFieldData) {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getFlowDirection:entry',message:'Flow direction calculation',data:{x,y,hasFlowField:!!flowFieldData,hasDistances:!!flowFieldData?.distances},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-  // #endregion
   
   if (!flowFieldData || !flowFieldData.distances) {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getFlowDirection:null',message:'No flow field data',data:{hasFlowField:!!flowFieldData,hasDistances:!!flowFieldData?.distances},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     return { x: 0, y: 0 }; // No flow field
   }
   
@@ -165,64 +212,105 @@ export function getFlowDirection(x, y, flowFieldData) {
   const gridH = distances.length;
   const gridW = distances[0].length;
   
-  // Convert world coordinates to grid coordinates
-  const gridX = Math.floor(x / gridSize);
-  const gridY = Math.floor(y / gridSize);
+  // Step 2: Bilinear interpolation - don't snap to grid, use exact world position
+  // Convert to grid coordinates (not floored - we use fractional part for interpolation)
+  const gridX = x / gridSize;
+  const gridY = y / gridSize;
   
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getFlowDirection:coords',message:'Grid coordinates',data:{gridX,gridY,gridW,gridH,isInBounds:gridY>=0&&gridY<gridH&&gridX>=0&&gridX<gridW},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-  // #endregion
+  // Get the center grid cell (the cell we're currently in)
+  const centerGridX = Math.floor(gridX);
+  const centerGridY = Math.floor(gridY);
   
-  // Bounds check
-  if (gridY < 0 || gridY >= gridH || gridX < 0 || gridX >= gridW) {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getFlowDirection:out_of_bounds',message:'Out of bounds',data:{gridX,gridY,gridW,gridH},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-    // #endregion
-    return { x: 0, y: 0 }; // Out of bounds
-  }
+  // Clamp center to grid bounds
+  const clampedCenterX = Math.max(0, Math.min(centerGridX, gridW - 1));
+  const clampedCenterY = Math.max(0, Math.min(centerGridY, gridH - 1));
   
-  const currentDist = distances[gridY][gridX];
+  // Get center cell distance
+  const centerDist = distances[clampedCenterY][clampedCenterX];
   
-  // If current cell has infinite distance (wall), return zero vector
-  if (currentDist === Infinity) {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getFlowDirection:infinity',message:'Current cell is wall',data:{gridX,gridY,currentDist},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
-    return { x: 0, y: 0 };
-  }
-  
-  // Check all 8 neighbors to find the one with lowest distance
-  const dirs = [
-    [0, 1], [1, 0], [0, -1], [-1, 0], // Cardinal
-    [1, 1], [1, -1], [-1, -1], [-1, 1] // Diagonal
-  ];
-  
-  let bestDir = { x: 0, y: 0 };
-  let bestDist = currentDist;
-  const neighborDists = [];
-  
-  for (const [dx, dy] of dirs) {
-    const nx = gridX + dx;
-    const ny = gridY + dy;
+  // If center is a wall, fallback to discrete neighbor check
+  if (centerDist === Infinity) {
+    // Fallback: try to find a valid neighbor
+    const cardinalDirs = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+    let bestDir = { x: 0, y: 0 };
+    let bestDist = Infinity;
     
-    if (ny < 0 || ny >= gridH || nx < 0 || nx >= gridW) continue;
-    
-    const neighborDist = distances[ny][nx];
-    neighborDists.push({dx,dy,dist:neighborDist});
-    
-    // Find neighbor with lowest distance (closer to target)
-    if (neighborDist < bestDist) {
-      bestDist = neighborDist;
-      // Normalize direction vector
-      const len = Math.hypot(dx, dy) || 1;
-      bestDir = { x: dx / len, y: dy / len };
+    for (const [dx, dy] of cardinalDirs) {
+      const nx = clampedCenterX + dx;
+      const ny = clampedCenterY + dy;
+      if (ny >= 0 && ny < gridH && nx >= 0 && nx < gridW) {
+        const neighborDist = distances[ny][nx];
+        if (neighborDist < bestDist && neighborDist !== Infinity) {
+          bestDist = neighborDist;
+          const len = Math.hypot(dx, dy) || 1;
+          bestDir = { x: dx / len, y: dy / len };
+        }
+      }
     }
+    
+    return bestDir;
   }
   
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/f7ace1fb-1ecf-4f19-b232-cce80869f22f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'getFlowDirection:result',message:'Flow direction result',data:{gridX,gridY,currentDist,bestDist,bestDir,neighborDists},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-  // #endregion
+  // Get the 4 cardinal neighbors for gradient calculation
+  // Left: (centerX - 1, centerY), Right: (centerX + 1, centerY)
+  // Top: (centerX, centerY - 1), Bottom: (centerX, centerY + 1)
+  const leftX = Math.max(0, clampedCenterX - 1);
+  const rightX = Math.min(gridW - 1, clampedCenterX + 1);
+  const topY = Math.max(0, clampedCenterY - 1);
+  const bottomY = Math.min(gridH - 1, clampedCenterY + 1);
   
-  // If no better neighbor found, return zero vector (already at target or stuck)
-  return bestDir;
+  // Sample distances from the 4 cardinal neighbors
+  // Left and Right use the same Y coordinate (centerY)
+  // Top and Bottom use the same X coordinate (centerX)
+  let distLeft = distances[clampedCenterY][leftX];
+  let distRight = distances[clampedCenterY][rightX];
+  let distTop = distances[topY][clampedCenterX];
+  let distBottom = distances[bottomY][clampedCenterX];
+  
+  // Handle Infinity neighbors by using center distance (prevents gradient from breaking near walls)
+  // This allows gradient to still work when some neighbors are walls
+  if (distLeft === Infinity) distLeft = centerDist;
+  if (distRight === Infinity) distRight = centerDist;
+  if (distTop === Infinity) distTop = centerDist;
+  if (distBottom === Infinity) distBottom = centerDist;
+  
+  // Step 2: Calculate gradient vector using finite differences
+  // The gradient of a distance field points toward increasing distance
+  // We want to go toward decreasing distance (target), so we use the negative gradient
+  // Gradient formula: grad_x = (distRight - distLeft) / (2 * gridSize)
+  // If target is to the right: distRight < distLeft, so grad_x < 0 (points left, toward higher distance)
+  // Negative gradient: -grad_x > 0 (points right, toward lower distance/target) ✓
+  const gradX = (distRight - distLeft) / (2 * gridSize);
+  const gradY = (distBottom - distTop) / (2 * gridSize);
+  
+  // Negate to get direction toward target (decreasing distance)
+  const vx = -gradX;
+  const vy = -gradY;
+  
+  // Normalize the vector
+  const mag = Math.hypot(vx, vy);
+  if (mag < 0.001) {
+    // Gradient is too small (at or near target), fallback to discrete neighbor check
+    const cardinalDirs = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+    let bestDir = { x: 0, y: 0 };
+    let bestDist = centerDist;
+    
+    for (const [dx, dy] of cardinalDirs) {
+      const nx = clampedCenterX + dx;
+      const ny = clampedCenterY + dy;
+      if (ny >= 0 && ny < gridH && nx >= 0 && nx < gridW) {
+        const neighborDist = distances[ny][nx];
+        if (neighborDist < bestDist && neighborDist !== Infinity) {
+          bestDist = neighborDist;
+          const len = Math.hypot(dx, dy) || 1;
+          bestDir = { x: dx / len, y: dy / len };
+        }
+      }
+    }
+    
+    return bestDir;
+  }
+  
+  // Return normalized vector pointing toward target
+  return { x: vx / mag, y: vy / mag };
 }
