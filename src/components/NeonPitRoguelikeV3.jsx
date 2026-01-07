@@ -7,6 +7,8 @@ import { isPointWalkable, findNearestWalkable, hasLineOfSight, circleOverlapsRec
 import { generateFlowField, getFlowDirection } from "../game/systems/PathfindingSystem.js";
 import { BSPNode, generateBSPDungeon, convertBSPToGrid, generateWallInfluenceMap } from "../game/world/BSPDungeonGenerator.js";
 import { generateProceduralLevel } from "../game/world/LevelGenerator.js";
+import menuMusicUrl from "../audio/music/Menu.mp3";
+import battleMusicUrl from "../audio/music/Battle.mp3";
 
 // Aliases for backward compatibility
 const getVisualCubeRadius = getVisualRadius;
@@ -36,10 +38,20 @@ const resolveDynamicCircleOverlap = resolveDynamicOverlap;
 
 import { ISO_MODE } from "../data/constants.js";
 import { worldToIso, isoToWorld, getIsoDepth, transformInputForIsometric, drawIsometricCube, drawEntityAsCube, drawIsometricRectangle } from "../rendering/IsometricRenderer.js";
+import { BossController, ConeAttackAbility, LineDashAbility, RingPulseAbility, BOSS_ABILITY_STATE, DANGER_ZONE_TYPE } from "../game/systems/BossAbilitySystem.js";
 
 
 
 import { RARITY, RARITY_COLOR, TYPE, INTERACT } from "../data/constants.js";
+
+// Latest updates/changelog - update this with recent changes
+const LATEST_UPDATES = [
+  "• Enhanced upgrade visuals & fanfare",
+  "• Improved boss mechanics & telegraphs",
+  "• Balanced economy & chest costs",
+  "• New keyboard controls (A/D/E)",
+  "• Map generation improvements"
+];
 
 function xpToNext(level) {
   return Math.round(16 + level * 8 + Math.pow(level, 1.35) * 4);
@@ -72,10 +84,13 @@ function rarityMult(r) {
 }
 
 function chestCost(chestOpens, floor) {
-  const base = 6;
-  const inc = 3;
-  const floorAdd = Math.floor((floor - 1) * 1.2);
-  return base + chestOpens * inc + floorAdd;
+  const base = 20; // Increased from 6 - much more expensive starting cost
+  // Truly exponential increase: cost = base * (multiplier ^ chestOpens)
+  // This creates: 20, 36, 65, 117, 211, 380, 684, 1231, etc.
+  const multiplier = 1.8; // Increased from 1.5 - each chest costs 1.8x the previous (much steeper)
+  const floorMultiplier = 1 + (floor - 1) * 0.2; // +20% per floor (increased from 15%)
+  const exponentialCost = base * Math.pow(multiplier, chestOpens) * floorMultiplier;
+  return Math.round(exponentialCost);
 }
 
 function mitigateDamage(amount, armor) {
@@ -384,6 +399,13 @@ export default function NeonPitRoguelikeV3() {
     muted: false,
     nextNoteT: 0,
     noteStep: 0,
+    menuMusic: null,
+    battleMusic: null,
+    currentTrack: null, // 'menu' or 'battle' or null
+    fadeTime: 0,
+    fadeDuration: 0.5, // seconds to fade between tracks
+    muffled: false, // true when on levelup screen
+    muffledVolume: 0.5, // volume multiplier when muffled (50% of normal)
   });
 
   const [ui, setUi] = useState({
@@ -400,6 +422,7 @@ export default function NeonPitRoguelikeV3() {
     muted: false,
     musicOn: true,
     sfxOn: true,
+    musicVolume: 0.5, // Music volume 0-1
     deathReason: "",
     showStats: false,
     selectedChar: "cowboy",
@@ -408,6 +431,10 @@ export default function NeonPitRoguelikeV3() {
     adminCategory: "main", // Admin category: "main", "weapons", "tomes", "items"
     bossTpX: null, // Boss teleporter X position
     bossTpY: null, // Boss teleporter Y position
+    selectedChoiceIndex: 0, // Selected upgrade index for keyboard navigation
+    levelUpFanfareT: 0, // Level up fanfare animation timer
+    chestOpenFanfareT: 0, // Chest opening fanfare animation timer
+    highestRarity: RARITY.COMMON, // Highest rarity in current choices for fanfare color
   });
 
   // ISO_SCALE state for dynamic adjustment during testing
@@ -444,11 +471,43 @@ export default function NeonPitRoguelikeV3() {
     sfxGain.gain.value = 0.95;
     sfxGain.connect(master);
 
+    // Initialize HTML5 Audio elements for music
+    const menuMusic = new Audio(menuMusicUrl);
+    menuMusic.loop = true;
+    menuMusic.volume = 0;
+    menuMusic.preload = "auto";
+
+    const battleMusic = new Audio(battleMusicUrl);
+    battleMusic.loop = true;
+    battleMusic.volume = 0;
+    battleMusic.preload = "auto";
+
+    // Handle audio context resume on user interaction
+    const resumeAudio = () => {
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => {});
+      }
+      // Try to play music (will work after user interaction)
+      if (a.currentTrack === "menu" && menuMusic.paused) {
+        menuMusic.play().catch(() => {});
+      }
+      if (a.currentTrack === "battle" && battleMusic.paused) {
+        battleMusic.play().catch(() => {});
+      }
+    };
+    
+    // Pause initially - will start playing when updateMusic is called
+    menuMusic.pause();
+    battleMusic.pause();
+
     a.ctx = ctx;
     a.master = master;
     a.musicGain = musicGain;
     a.sfxGain = sfxGain;
+    a.menuMusic = menuMusic;
+    a.battleMusic = battleMusic;
     a.started = true;
+    a.resumeAudio = resumeAudio;
 
     applyAudioToggles(uiRef.current);
   }
@@ -464,6 +523,184 @@ export default function NeonPitRoguelikeV3() {
     if (a.master) a.master.gain.value = a.muted ? 0 : 0.85;
     if (a.musicGain) a.musicGain.gain.value = a.musicOn && !a.muted ? 0.55 : 0;
     if (a.sfxGain) a.sfxGain.gain.value = a.sfxOn && !a.muted ? 0.95 : 0;
+
+    // Update music volume based on settings
+    updateMusicVolume();
+  }
+
+  function updateMusicVolume() {
+    const a = audioRef.current;
+    if (!a.started) return;
+    
+    // Get muted state and volume from UI state (more reliable)
+    const u = uiRef.current;
+    const isMuted = u ? u.muted : a.muted;
+    const musicVolume = u ? (u.musicVolume !== undefined ? u.musicVolume : 0.5) : 0.5;
+    
+    if (!a.menuMusic || !a.battleMusic) return;
+
+    const baseVolume = a.musicOn && !isMuted ? musicVolume : 0;
+    const targetVolume = a.muffled ? baseVolume * a.muffledVolume : baseVolume;
+    
+    if (a.menuMusic) {
+      a.menuMusic.volume = a.currentTrack === "menu" ? targetVolume : 0;
+    }
+    if (a.battleMusic) {
+      a.battleMusic.volume = a.currentTrack === "battle" ? targetVolume : 0;
+    }
+  }
+
+  function updateMusic(dt) {
+    const a = audioRef.current;
+    // Ensure audio is initialized
+    if (!a.started) {
+      ensureAudio();
+      return;
+    }
+    if (!a.menuMusic || !a.battleMusic) return;
+
+    const u = uiRef.current;
+    const s = stateRef.current;
+
+    // Determine what track should be playing
+    let desiredTrack = null;
+    let shouldMuffle = false;
+    
+    if (u.screen === "menu") {
+      desiredTrack = "menu";
+    } else if (u.screen === "levelup") {
+      // On levelup screen, keep current track but muffle it
+      desiredTrack = a.currentTrack; // Keep playing current track
+      shouldMuffle = true;
+    } else if (u.screen === "running" && s) {
+      // Check if in combat: enemies present or boss active
+      const hasEnemies = s.enemies && s.enemies.length > 0 && s.enemies.some(e => e.hp > 0);
+      const hasBoss = s.boss && s.boss.active;
+      
+      if (hasEnemies || hasBoss) {
+        desiredTrack = "battle";
+      } else {
+        // No combat, but still in game - play menu music
+        desiredTrack = "menu";
+      }
+    }
+    // For "dead" or other screens, desiredTrack stays null (no music)
+
+    // Update muffled state with smooth transition
+    if (a.muffled !== shouldMuffle) {
+      a.muffled = shouldMuffle;
+      // Volume will be updated in the normal flow below
+    }
+
+    // Handle track transitions
+    // Only transition if we're actually changing tracks (not just muffling)
+    if (desiredTrack !== a.currentTrack && desiredTrack !== null) {
+      if (a.fadeTime <= 0) {
+        // Start fade transition
+        a.fadeTime = a.fadeDuration;
+      }
+      
+      a.fadeTime = Math.max(0, a.fadeTime - dt);
+      const fadeProgress = a.fadeTime / a.fadeDuration;
+      
+      if (fadeProgress <= 0) {
+        // Fade complete, switch tracks
+        if (a.currentTrack === "menu" && a.menuMusic) {
+          a.menuMusic.pause();
+        }
+        if (a.currentTrack === "battle" && a.battleMusic) {
+          a.battleMusic.pause();
+        }
+        
+        a.currentTrack = desiredTrack;
+        
+        if (desiredTrack === "menu" && a.menuMusic) {
+          a.menuMusic.currentTime = 0;
+          // Resume audio context if needed
+          if (a.ctx && a.ctx.state === "suspended") {
+            a.ctx.resume().catch(() => {});
+          }
+          a.menuMusic.play().catch(() => {});
+        } else if (desiredTrack === "battle" && a.battleMusic) {
+          a.battleMusic.currentTime = 0;
+          // Resume audio context if needed
+          if (a.ctx && a.ctx.state === "suspended") {
+            a.ctx.resume().catch(() => {});
+          }
+          a.battleMusic.play().catch(() => {});
+        }
+        // Update volume after track change
+        updateMusicVolume();
+      } else {
+        // Fade in progress
+        const u = uiRef.current;
+        const isMuted = u ? u.muted : a.muted;
+        const musicVolume = u ? (u.musicVolume !== undefined ? u.musicVolume : 0.5) : 0.5;
+        const baseVolume = a.musicOn && !isMuted ? musicVolume : 0;
+        const targetVolume = a.muffled ? baseVolume * a.muffledVolume : baseVolume;
+        const fadeOutVol = targetVolume * fadeProgress;
+        const fadeInVol = desiredTrack ? targetVolume * (1 - fadeProgress) : 0;
+        
+        if (a.currentTrack === "menu" && a.menuMusic) {
+          a.menuMusic.volume = fadeOutVol;
+        }
+        if (a.currentTrack === "battle" && a.battleMusic) {
+          a.battleMusic.volume = fadeOutVol;
+        }
+        
+        if (desiredTrack === "menu" && a.menuMusic) {
+          if (a.menuMusic.paused) {
+            a.menuMusic.currentTime = 0;
+            // Resume audio context if needed
+            if (a.ctx && a.ctx.state === "suspended") {
+              a.ctx.resume().catch(() => {});
+            }
+            a.menuMusic.play().catch(() => {});
+          }
+          a.menuMusic.volume = fadeInVol;
+        } else if (desiredTrack === "battle" && a.battleMusic) {
+          if (a.battleMusic.paused) {
+            a.battleMusic.currentTime = 0;
+            // Resume audio context if needed
+            if (a.ctx && a.ctx.state === "suspended") {
+              a.ctx.resume().catch(() => {});
+            }
+            a.battleMusic.play().catch(() => {});
+          }
+          a.battleMusic.volume = fadeInVol;
+        }
+      }
+    } else if (desiredTrack === null && a.currentTrack !== null) {
+      // Fading out to silence (e.g., dead screen)
+      if (a.fadeTime <= 0) {
+        a.fadeTime = a.fadeDuration;
+      }
+      a.fadeTime = Math.max(0, a.fadeTime - dt);
+      const fadeProgress = a.fadeTime / a.fadeDuration;
+      const u = uiRef.current;
+      const isMuted = u ? u.muted : a.muted;
+      const musicVolume = u ? (u.musicVolume !== undefined ? u.musicVolume : 0.5) : 0.5;
+      const baseVolume = a.musicOn && !isMuted ? musicVolume : 0;
+      const fadeOutVol = baseVolume * fadeProgress;
+      
+      if (a.currentTrack === "menu" && a.menuMusic) {
+        a.menuMusic.volume = fadeOutVol;
+        if (fadeProgress <= 0) {
+          a.menuMusic.pause();
+          a.currentTrack = null;
+        }
+      }
+      if (a.currentTrack === "battle" && a.battleMusic) {
+        a.battleMusic.volume = fadeOutVol;
+        if (fadeProgress <= 0) {
+          a.battleMusic.pause();
+          a.currentTrack = null;
+        }
+      }
+    } else {
+      // Same track (or levelup keeping current track), just update volume (handles muffled state changes)
+      updateMusicVolume();
+    }
   }
 
   function playBeep({ type = "sine", f0 = 440, f1 = 440, dur = 0.08, gain = 0.2, pan = 0, to = "sfx" }) {
@@ -597,7 +834,7 @@ export default function NeonPitRoguelikeV3() {
           mode: "bullet",
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.12),
+          (p) => (p.weaponDamage *= 1.08), // Reduced from 1.12 to 1.08
           (p) => (p.attackCooldown = Math.max(0.24, p.attackCooldown * 0.92)),
           (p) => (p.critChance = clamp(p.critChance + 0.03, 0, 0.8)),
           (p) => {
@@ -606,7 +843,7 @@ export default function NeonPitRoguelikeV3() {
               p.projectiles = clamp(p.projectiles + 1, 1, 16);
             }
           },
-          (p) => (p.weaponDamage *= 1.16),
+          (p) => (p.weaponDamage *= 1.12), // Reduced from 1.16 to 1.12
         ],
         icon: makeIconDraw("revolver"),
       },
@@ -626,10 +863,10 @@ export default function NeonPitRoguelikeV3() {
           splashR: 54,
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.14),
+          (p) => (p.weaponDamage *= 1.10), // Reduced from 1.14 to 1.10
           (p) => (p.attackCooldown = Math.max(0.3, p.attackCooldown * 0.9)),
           (p) => (p.sizeMult *= 1.08),
-          (p) => (p.weaponDamage *= 1.18),
+          (p) => (p.weaponDamage *= 1.14), // Reduced from 1.18 to 1.14
         ],
         icon: makeIconDraw("staff"),
       },
@@ -649,10 +886,10 @@ export default function NeonPitRoguelikeV3() {
           meleeR: 68,
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.15),
+          (p) => (p.weaponDamage *= 1.11), // Reduced from 1.15 to 1.11
           (p) => (p.attackCooldown = Math.max(0.22, p.attackCooldown * 0.9)),
           (p) => (p.sizeMult *= 1.06),
-          (p) => (p.weaponDamage *= 1.2),
+          (p) => (p.weaponDamage *= 1.16), // Reduced from 1.20 to 1.16
         ],
         icon: makeIconDraw("sword"),
       },
@@ -671,7 +908,7 @@ export default function NeonPitRoguelikeV3() {
           mode: "bullet",
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.12),
+          (p) => (p.weaponDamage *= 1.08), // Reduced from 1.12 to 1.08
           (p) => (p.bounces = clamp(p.bounces + 1, 0, 7)),
           (p) => (p.attackCooldown = Math.max(0.22, p.attackCooldown * 0.92)),
           (p) => {
@@ -680,7 +917,7 @@ export default function NeonPitRoguelikeV3() {
               p.projectiles = clamp(p.projectiles + 1, 1, 16);
             }
           },
-          (p) => (p.weaponDamage *= 1.16),
+          (p) => (p.weaponDamage *= 1.12), // Reduced from 1.16 to 1.12
         ],
         icon: makeIconDraw("revolver"),
       },
@@ -701,7 +938,7 @@ export default function NeonPitRoguelikeV3() {
           bulletSpeedMult: 0.65, // Slower throw speed
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.14),
+          (p) => (p.weaponDamage *= 1.10), // Reduced from 1.14 to 1.10
           (p) => (p.attackCooldown = Math.max(0.25, p.attackCooldown * 0.9)),
           (p) => {
             // For weapons, p is the weapon object, not the player
@@ -709,7 +946,7 @@ export default function NeonPitRoguelikeV3() {
               p.projectiles = clamp(p.projectiles + 1, 1, 16);
             }
           },
-          (p) => (p.weaponDamage *= 1.18),
+          (p) => (p.weaponDamage *= 1.14), // Reduced from 1.18 to 1.14
         ],
         icon: makeIconDraw("nuke"),
       },
@@ -728,9 +965,9 @@ export default function NeonPitRoguelikeV3() {
           mode: "bullet",
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.12),
+          (p) => (p.weaponDamage *= 1.08), // Reduced from 1.12 to 1.08
           (p) => (p.attackCooldown = Math.max(0.24, p.attackCooldown * 0.9)),
-          (p) => (p.weaponDamage *= 1.18),
+          (p) => (p.weaponDamage *= 1.14), // Reduced from 1.18 to 1.14
           (p) => (p.projectileSpeed *= 1.08),
         ],
         icon: makeIconDraw("time"),
@@ -751,7 +988,7 @@ export default function NeonPitRoguelikeV3() {
           bulletSpeedMult: 1.2,
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.13),
+          (p) => (p.weaponDamage *= 1.09), // Reduced from 1.13 to 1.09
           (p) => (p.attackCooldown = Math.max(0.25, p.attackCooldown * 0.91)),
           (p) => {
             // For weapons, p is the weapon object, not the player
@@ -759,7 +996,7 @@ export default function NeonPitRoguelikeV3() {
               p.projectiles = clamp(p.projectiles + 1, 1, 16);
             }
           },
-          (p) => (p.weaponDamage *= 1.17),
+          (p) => (p.weaponDamage *= 1.09), // Reduced from 1.13 to 1.09 // Reduced from 1.17 to 1.13
         ],
         icon: makeIconDraw("revolver"),
       },
@@ -779,10 +1016,10 @@ export default function NeonPitRoguelikeV3() {
           bulletSpeedMult: 1.3,
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.14),
+          (p) => (p.weaponDamage *= 1.10), // Reduced from 1.14 to 1.10
           (p) => (p.pierce = clamp(p.pierce + 1, 0, 8)),
           (p) => (p.attackCooldown = Math.max(0.24, p.attackCooldown * 0.9)),
-          (p) => (p.weaponDamage *= 1.18),
+          (p) => (p.weaponDamage *= 1.14), // Reduced from 1.18 to 1.14
         ],
         icon: makeIconDraw("staff"),
       },
@@ -802,10 +1039,10 @@ export default function NeonPitRoguelikeV3() {
           bulletSpeedMult: 0.9,
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.15),
+          (p) => (p.weaponDamage *= 1.11), // Reduced from 1.15 to 1.11
           (p) => (p.pierce = clamp(p.pierce + 1, 0, 5)),
           (p) => (p.attackCooldown = Math.max(0.24, p.attackCooldown * 0.92)),
-          (p) => (p.weaponDamage *= 1.19),
+          (p) => (p.weaponDamage *= 1.15), // Reduced from 1.19 to 1.15
         ],
         icon: makeIconDraw("sword"),
       },
@@ -825,7 +1062,7 @@ export default function NeonPitRoguelikeV3() {
           bulletSpeedMult: 0.85,
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.12),
+          (p) => (p.weaponDamage *= 1.08), // Reduced from 1.12 to 1.08
           (p) => {
             // For weapons, p is the weapon object, not the player
             if (p.projectiles !== undefined) {
@@ -833,7 +1070,7 @@ export default function NeonPitRoguelikeV3() {
             }
           },
           (p) => (p.attackCooldown = Math.max(0.28, p.attackCooldown * 0.92)),
-          (p) => (p.weaponDamage *= 1.16),
+          (p) => (p.weaponDamage *= 1.12), // Reduced from 1.16 to 1.12
         ],
         icon: makeIconDraw("revolver"),
       },
@@ -853,9 +1090,9 @@ export default function NeonPitRoguelikeV3() {
           meleeR: 50,
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.14),
+          (p) => (p.weaponDamage *= 1.10), // Reduced from 1.14 to 1.10
           (p) => (p.weaponMeleeR = (p.weaponMeleeR || 50) + 5),
-          (p) => (p.weaponDamage *= 1.18),
+          (p) => (p.weaponDamage *= 1.14), // Reduced from 1.18 to 1.14
         ],
         icon: makeIconDraw("staff"),
       },
@@ -875,10 +1112,10 @@ export default function NeonPitRoguelikeV3() {
           bulletSpeedMult: 0.65, // Slower speed for visibility
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.13),
+          (p) => (p.weaponDamage *= 1.09), // Reduced from 1.13 to 1.09
           (p) => (p.attackCooldown = Math.max(0.26, p.attackCooldown * 0.91)),
           (p) => (p.bounces = clamp(p.bounces + 1, 0, 7)),
-          (p) => (p.weaponDamage *= 1.17),
+          (p) => (p.weaponDamage *= 1.09), // Reduced from 1.13 to 1.09 // Reduced from 1.17 to 1.13
         ],
         icon: makeIconDraw("revolver"),
       },
@@ -898,10 +1135,10 @@ export default function NeonPitRoguelikeV3() {
           bulletSpeedMult: 1.4, // Fast projectile
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.15),
+          (p) => (p.weaponDamage *= 1.11), // Reduced from 1.15 to 1.11
           (p) => (p.pierce = clamp(p.pierce + 1, 0, 8)),
           (p) => (p.attackCooldown = Math.max(0.28, p.attackCooldown * 0.92)),
-          (p) => (p.weaponDamage *= 1.2),
+          (p) => (p.weaponDamage *= 1.16), // Reduced from 1.20 to 1.16
         ],
         icon: makeIconDraw("revolver"),
       },
@@ -922,9 +1159,9 @@ export default function NeonPitRoguelikeV3() {
         },
         levelBonuses: [
           (p) => (p.bounces = clamp(p.bounces + 1, 0, 7)),
-          (p) => (p.weaponDamage *= 1.14),
+          (p) => (p.weaponDamage *= 1.10), // Reduced from 1.14 to 1.10
           (p) => (p.attackCooldown = Math.max(0.24, p.attackCooldown * 0.91)),
-          (p) => (p.weaponDamage *= 1.18),
+          (p) => (p.weaponDamage *= 1.14), // Reduced from 1.18 to 1.14
         ],
         icon: makeIconDraw("staff"),
       },
@@ -949,9 +1186,9 @@ export default function NeonPitRoguelikeV3() {
             p.orbitBlades = (p.orbitBlades || 2) + 1;
             p.orbitBlades = clamp(p.orbitBlades, 2, 6);
           },
-          (p) => (p.weaponDamage *= 1.13),
+          (p) => (p.weaponDamage *= 1.09), // Reduced from 1.13 to 1.09
           (p) => (p.weaponMeleeR = (p.weaponMeleeR || 60) + 8),
-          (p) => (p.weaponDamage *= 1.17),
+          (p) => (p.weaponDamage *= 1.09), // Reduced from 1.13 to 1.09 // Reduced from 1.17 to 1.13
         ],
         icon: makeIconDraw("sword"),
       },
@@ -977,7 +1214,7 @@ export default function NeonPitRoguelikeV3() {
             }
           },
           (p) => (p.attackCooldown = Math.max(0.18, p.attackCooldown * 0.9)),
-          (p) => (p.weaponDamage *= 1.12),
+          (p) => (p.weaponDamage *= 1.08), // Reduced from 1.12 to 1.08
           (p) => (p.critChance = clamp((p.critChance || 0) + 0.04, 0, 0.8)),
         ],
         icon: makeIconDraw("revolver"),
@@ -999,10 +1236,10 @@ export default function NeonPitRoguelikeV3() {
           bulletSpeedMult: 0.7, // Slower projectile
         },
         levelBonuses: [
-          (p) => (p.weaponDamage *= 1.16),
+          (p) => (p.weaponDamage *= 1.12), // Reduced from 1.16 to 1.12
           (p) => (p.weaponSplashR = (p.weaponSplashR || 80) + 10),
           (p) => (p.attackCooldown = Math.max(0.32, p.attackCooldown * 0.92)),
-          (p) => (p.weaponDamage *= 1.2),
+          (p) => (p.weaponDamage *= 1.16), // Reduced from 1.20 to 1.16
         ],
         icon: makeIconDraw("nuke"),
       },
@@ -1030,7 +1267,7 @@ export default function NeonPitRoguelikeV3() {
           // Apply damage increase to all weapons
           if (p.weapons && p.weapons.length > 0) {
             for (const weapon of p.weapons) {
-              weapon.weaponDamage *= 1 + 0.06 * m;
+              weapon.weaponDamage *= 1 + 0.04 * m; // Reduced from 0.06 to 0.04 (40% less effective)
             }
           }
         },
@@ -1149,18 +1386,17 @@ export default function NeonPitRoguelikeV3() {
       },
       {
         id: "t_bounce",
-        name: "Bounce Tome",
+        name: "Ricochet Tome",
         type: TYPE.TOME,
-        desc: "+1 Bounce to all weapons",
+        desc: "+Bounces to all weapons",
         apply: (p, r) => {
           const m = rarityMult(r);
-          // Always add bounces to all weapons (guaranteed, scales with rarity)
-          // Common/Uncommon: +1, Rare/Legendary: +2
-          const bounceAdd = m < 1.5 ? 1 : 2;
+          // Balanced merge: Common/Uncommon: +1, Rare: +2, Legendary: +3
+          const bounceAdd = m < 1.2 ? 1 : m < 1.4 ? 2 : 3;
           if (p.weapons && p.weapons.length > 0) {
             for (const weapon of p.weapons) {
               if (weapon.bounces !== undefined && weapon.bounces >= 0) {
-                weapon.bounces = clamp(weapon.bounces + bounceAdd, 0, 8);
+                weapon.bounces = clamp(weapon.bounces + bounceAdd, 0, 9);
               }
             }
           }
@@ -1248,8 +1484,12 @@ export default function NeonPitRoguelikeV3() {
         desc: "Lower HP = more damage",
         apply: (p, r) => {
           const m = rarityMult(r);
+          // Lower HP (risk/reward)
+          const hpReduction = 0.15 * m; // 15-23% HP reduction
+          p.maxHp = Math.max(50, Math.round(p.maxHp * (1 - hpReduction)));
+          p.hp = Math.min(p.hp, p.maxHp); // Cap current HP to new max
           // Damage multiplier based on missing HP (risk/reward)
-          p.berserkerMult = (p.berserkerMult || 0) + 0.15 * m; // Up to 30-60% more damage at low HP
+          p.berserkerMult = (p.berserkerMult || 0) + 0.10 * m; // Reduced from 0.15 to 0.10 (33% less effective)
         },
         icon: makeIconDraw("time"),
       },
@@ -1296,7 +1536,7 @@ export default function NeonPitRoguelikeV3() {
         apply: (p, r) => {
           const m = rarityMult(r);
           // Damage scales with movement speed
-          p.speedDamageMult = (p.speedDamageMult || 0) + 0.08 * m; // 8-12% damage per 100 speed
+          p.speedDamageMult = (p.speedDamageMult || 0) + 0.05 * m; // Reduced from 0.08 to 0.05 (37% less effective)
         },
         icon: makeIconDraw("time"),
       },
@@ -1534,25 +1774,6 @@ export default function NeonPitRoguelikeV3() {
           const m = rarityMult(r);
           s.player.chainReactionChance = (s.player.chainReactionChance || 0) + 0.25 * m; // 25-38% chance
           s.player.chainReactionRadius = (s.player.chainReactionRadius || 0) + 45 * m; // Explosion radius
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "ricochet",
-        name: "Ricochet",
-        type: TYPE.ITEM,
-        desc: "Projectiles bounce more times",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          const bounceAdd = m < 1.5 ? 2 : 3; // Common/Uncommon: +2, Rare/Legendary: +3
-          if (s.player.weapons && s.player.weapons.length > 0) {
-            for (const weapon of s.player.weapons) {
-              if (weapon.bounces !== undefined && weapon.bounces >= 0) {
-                weapon.bounces = clamp(weapon.bounces + bounceAdd, 0, 10);
-              }
-            }
-          }
-          s.player.bounces = (s.player.bounces || 0) + bounceAdd;
         },
         icon: makeIconDraw("time"),
       },
@@ -1859,7 +2080,7 @@ export default function NeonPitRoguelikeV3() {
     else if (tier === "tank") baseCoin = 4;
     
     // Scale coin with HP (harder enemies = more gold)
-    const coinFromHp = Math.round(finalHp / 30); // 1 coin per 30 HP
+    const coinFromHp = Math.round(finalHp / 40); // Reduced from 30 - 1 coin per 40 HP (less gold)
     let finalCoin = baseCoin + coinFromHp;
     
     if (isElite) {
@@ -1868,6 +2089,9 @@ export default function NeonPitRoguelikeV3() {
     if (isGoldenElite) {
       finalCoin = Math.round(finalCoin * 3); // Golden elites give 3x more
     }
+    
+    // Reduce gold gain by 50%
+    finalCoin = Math.round(finalCoin * 0.5);
 
     s.enemies.push({
       id: Math.random().toString(16).slice(2),
@@ -1921,6 +2145,164 @@ export default function NeonPitRoguelikeV3() {
     }
 
     return best;
+  }
+
+  function drawDangerZones(s, ctx, cam, dangerZones, isoScale) {
+    if (!dangerZones || dangerZones.length === 0) return;
+    
+    const { w, h } = s.arena;
+    const pulse = Math.sin(s.t * 10) * 0.15 + 0.85; // Pulsing effect
+    
+    for (const zone of dangerZones) {
+      const alpha = zone.alpha * (zone.pulse ? pulse : 1.0);
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = zone.color;
+      ctx.fillStyle = zone.color;
+      ctx.lineWidth = 3;
+      
+      if (zone.type === DANGER_ZONE_TYPE.CONE) {
+        // Draw cone attack zone
+        const centerX = ISO_MODE ? (() => {
+          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return w / 2 + zoneIso.x - camIso.x;
+        })() : zone.x;
+        const centerY = ISO_MODE ? (() => {
+          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return h / 2 + zoneIso.y - camIso.y;
+        })() : zone.y;
+        
+        // Draw cone sector
+        const startAngle = zone.angle - zone.angleWidth / 2;
+        const endAngle = zone.angle + zone.angleWidth / 2;
+        const range = ISO_MODE ? zone.range * isoScale * 0.5 : zone.range;
+        
+        ctx.beginPath();
+        ctx.moveTo(centerX, centerY);
+        ctx.arc(centerX, centerY, range, startAngle, endAngle);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Outer edge highlight
+        ctx.globalAlpha = alpha * 1.5;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, range, startAngle, endAngle);
+        ctx.stroke();
+        
+      } else if (zone.type === DANGER_ZONE_TYPE.LINE_DASH) {
+        // Draw line dash zone
+        const startX = ISO_MODE ? (() => {
+          const startIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return w / 2 + startIso.x - camIso.x;
+        })() : zone.x;
+        const startY = ISO_MODE ? (() => {
+          const startIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return h / 2 + startIso.y - camIso.y;
+        })() : zone.y;
+        const endX = ISO_MODE ? (() => {
+          const endIso = worldToIso(zone.targetX, zone.targetY, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return w / 2 + endIso.x - camIso.x;
+        })() : zone.targetX;
+        const endY = ISO_MODE ? (() => {
+          const endIso = worldToIso(zone.targetX, zone.targetY, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return h / 2 + endIso.y - camIso.y;
+        })() : zone.targetY;
+        
+        const width = ISO_MODE ? zone.width * isoScale * 0.5 : zone.width;
+        const dx = endX - startX;
+        const dy = endY - startY;
+        const dist = Math.hypot(dx, dy);
+        const perpX = -dy / dist;
+        const perpY = dx / dist;
+        
+        // Draw rectangle
+        ctx.beginPath();
+        ctx.moveTo(startX + perpX * width / 2, startY + perpY * width / 2);
+        ctx.lineTo(startX - perpX * width / 2, startY - perpY * width / 2);
+        ctx.lineTo(endX - perpX * width / 2, endY - perpY * width / 2);
+        ctx.lineTo(endX + perpX * width / 2, endY + perpY * width / 2);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Edge highlight
+        ctx.globalAlpha = alpha * 1.5;
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        
+      } else if (zone.type === DANGER_ZONE_TYPE.RING_PULSE) {
+        // Draw ring pulse zone
+        const centerX = ISO_MODE ? (() => {
+          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return w / 2 + zoneIso.x - camIso.x;
+        })() : zone.x;
+        const centerY = ISO_MODE ? (() => {
+          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return h / 2 + zoneIso.y - camIso.y;
+        })() : zone.y;
+        
+        let innerR = ISO_MODE ? zone.innerRadius * isoScale * 0.5 : zone.innerRadius;
+        let outerR = ISO_MODE ? zone.outerRadius * isoScale * 0.5 : zone.outerRadius;
+        
+        // Safety check: ensure outer radius is always larger than inner
+        if (outerR <= innerR) {
+          outerR = innerR + 10; // Minimum visible ring width
+        }
+        
+        // Draw donut (outer circle minus inner circle)
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, outerR, 0, Math.PI * 2);
+        ctx.arc(centerX, centerY, innerR, 0, Math.PI * 2, true); // Counter-clockwise for hole
+        ctx.fill();
+        
+        // Edge highlights with better visibility
+        ctx.globalAlpha = Math.min(alpha * 1.2, 1.0); // Cap at 1.0
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = zone.color;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, outerR, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, innerR, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (zone.type === 'burning_ground') {
+        // Draw burning ground from phase 2 effects
+        const centerX = ISO_MODE ? (() => {
+          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return w / 2 + zoneIso.x - camIso.x;
+        })() : zone.x;
+        const centerY = ISO_MODE ? (() => {
+          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return h / 2 + zoneIso.y - camIso.y;
+        })() : zone.y;
+        
+        if (zone.angle !== undefined) {
+          // Cone-shaped burning ground
+          const startAngle = zone.angle - zone.angleWidth / 2;
+          const endAngle = zone.angle + zone.angleWidth / 2;
+          const range = ISO_MODE ? zone.range * isoScale * 0.5 : zone.range;
+          
+          ctx.globalAlpha = 0.3;
+          ctx.fillStyle = '#ff4400';
+          ctx.beginPath();
+          ctx.moveTo(centerX, centerY);
+          ctx.arc(centerX, centerY, range, startAngle, endAngle);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+    }
+    
+    ctx.globalAlpha = 1.0;
   }
 
   function pushCombatText(s, x, y, text, col, opts = {}) {
@@ -2007,7 +2389,7 @@ export default function NeonPitRoguelikeV3() {
           id: weaponDef.id,
           level: 1,
           attackCooldown: weaponDef.base.attackCooldown * (1 - 0.05 * (m - 1)),
-          weaponDamage: weaponDef.base.weaponDamage * (1 + 0.1 * (m - 1)), // Reduced from 0.18
+          weaponDamage: weaponDef.base.weaponDamage * (1 + 0.06 * (m - 1)), // Reduced from 0.1 to 0.06 (40% less effective)
           projectiles: weaponDef.base.projectiles + (rarity === RARITY.LEGENDARY ? 1 : 0),
           pierce: weaponDef.base.pierce,
           weaponSpread: weaponDef.base.spread,
@@ -2061,7 +2443,7 @@ export default function NeonPitRoguelikeV3() {
     // Apply level bonus
     fn(existingWeapon);
 
-    existingWeapon.weaponDamage *= 1 + 0.03 * (m - 1); // Reduced from 0.06
+    existingWeapon.weaponDamage *= 1 + 0.02 * (m - 1); // Reduced from 0.03 to 0.02 (33% less effective)
     existingWeapon.attackCooldown = Math.max(0.18, existingWeapon.attackCooldown * (1 - 0.015 * (m - 1))); // Reduced from 0.03
     
     // Weapon-specific upgrades based on weapon type
@@ -2210,9 +2592,27 @@ export default function NeonPitRoguelikeV3() {
 
         // Flamewalker - spawn fire under player feet
         if (weapon.id === "flamewalker" && weapon.weaponMode === "aura") {
-          const dmgBase = weapon.weaponDamage * (0.84 + 0.03 * s.floor);
+          // Reduced floor damage scaling from +3% to +1.5% per floor
+      const dmgBase = weapon.weaponDamage * (0.84 + 0.015 * s.floor);
+          
+          // Apply berserker damage multiplier (based on missing HP)
+          let berserkerBonus = 1.0;
+          if (p.berserkerMult > 0) {
+            const hpPercent = p.hp / p.maxHp;
+            const missingHpPercent = 1 - hpPercent;
+            berserkerBonus = 1 + (p.berserkerMult * missingHpPercent);
+          }
+          
+          // Apply speed demon damage multiplier (based on movement speed)
+          let speedBonus = 1.0;
+          if (p.speedDamageMult > 0) {
+            const currentSpeed = p.speedBase + p.speedBonus;
+            speedBonus = 1 + (p.speedDamageMult * (currentSpeed / 100));
+          }
+          
+          const dmgWithBonuses = dmgBase * berserkerBonus * speedBonus;
           const crit = Math.random() < clamp(p.critChance, 0, 0.8);
-          const dmg = crit ? dmgBase * 1.6 : dmgBase;
+          const dmg = crit ? dmgWithBonuses * 1.6 : dmgWithBonuses;
           const fireRadius = Math.max(45, (weapon.weaponMeleeR || 50) * p.sizeMult);
           
           // Spawn burning area under player
@@ -2246,9 +2646,27 @@ export default function NeonPitRoguelikeV3() {
 
         if (weapon.weaponMode === "melee") {
         const r = Math.max(34, (weapon.weaponMeleeR || 60) * p.sizeMult);
-        const dmgBase = weapon.weaponDamage * (0.84 + 0.03 * s.floor);
+        // Reduced floor damage scaling from +3% to +1.5% per floor
+      const dmgBase = weapon.weaponDamage * (0.84 + 0.015 * s.floor);
+        
+        // Apply berserker damage multiplier (based on missing HP)
+        let berserkerBonus = 1.0;
+        if (p.berserkerMult > 0) {
+          const hpPercent = p.hp / p.maxHp;
+          const missingHpPercent = 1 - hpPercent;
+          berserkerBonus = 1 + (p.berserkerMult * missingHpPercent);
+        }
+        
+        // Apply speed demon damage multiplier (based on movement speed)
+        let speedBonus = 1.0;
+        if (p.speedDamageMult > 0) {
+          const currentSpeed = p.speedBase + p.speedBonus;
+          speedBonus = 1 + (p.speedDamageMult * (currentSpeed / 100));
+        }
+        
+        const dmgWithBonuses = dmgBase * berserkerBonus * speedBonus;
       const crit = Math.random() < clamp(p.critChance, 0, 0.8);
-      const dmg = crit ? dmgBase * 1.6 : dmgBase;
+      const dmg = crit ? dmgWithBonuses * 1.6 : dmgWithBonuses;
 
       for (const e of s.enemies) {
         if (e.hp <= 0) continue;
@@ -2335,9 +2753,27 @@ export default function NeonPitRoguelikeV3() {
       // For boomerang weapons, always fire only 1 projectile at a time
       const count = isBoomerang ? 1 : Math.max(1, weapon.projectiles);
 
-      const dmgBase = weapon.weaponDamage * (0.84 + 0.03 * s.floor);
+      // Reduced floor damage scaling from +3% to +1.5% per floor
+      const dmgBase = weapon.weaponDamage * (0.84 + 0.015 * s.floor);
+      
+      // Apply berserker damage multiplier (based on missing HP)
+      let berserkerBonus = 1.0;
+      if (p.berserkerMult > 0) {
+        const hpPercent = p.hp / p.maxHp;
+        const missingHpPercent = 1 - hpPercent;
+        berserkerBonus = 1 + (p.berserkerMult * missingHpPercent); // More damage the lower your HP
+      }
+      
+      // Apply speed demon damage multiplier (based on movement speed)
+      let speedBonus = 1.0;
+      if (p.speedDamageMult > 0) {
+        const currentSpeed = p.speedBase + p.speedBonus;
+        speedBonus = 1 + (p.speedDamageMult * (currentSpeed / 100)); // Damage per 100 speed
+      }
+      
+      const dmgWithBonuses = dmgBase * berserkerBonus * speedBonus;
     const crit = Math.random() < clamp(p.critChance, 0, 0.8);
-    const dmg = crit ? dmgBase * 1.6 : dmgBase;
+    const dmg = crit ? dmgWithBonuses * 1.6 : dmgWithBonuses;
 
       // Weapon-specific colors and visuals
       let color = "#e6e8ff";
@@ -2566,7 +3002,11 @@ export default function NeonPitRoguelikeV3() {
     if (kind === INTERACT.GREED) cost = Math.round(8 + s.floor * 2);
     if (kind === INTERACT.SHRINE) cost = 0; // Free
     if (kind === INTERACT.MAGNET_SHRINE) cost = 0; // Free (but these won't spawn anymore)
-    if (kind === INTERACT.BOSS_TP) cost = Math.round(12 + s.floor * 2);
+    if (kind === INTERACT.BOSS_TP) {
+      // Boss portal cost: 20% of current gold, minimum 100 (calculated dynamically)
+      // Set to -1 as a flag to calculate dynamically
+      cost = -1;
+    }
 
     s.interact.push({
       id: Math.random().toString(16).slice(2),
@@ -2746,7 +3186,7 @@ export default function NeonPitRoguelikeV3() {
             const percent = Math.round(12 * m);
             detailedDesc = `+${percent}% XP Gain (${rarity})`;
           } else if (entry.id === "t_bounce") {
-            const bounceAdd = m < 1.5 ? 1 : 2;
+            const bounceAdd = m < 1.2 ? 1 : m < 1.4 ? 2 : 3;
             detailedDesc = `+${bounceAdd} Bounce to all weapons (${rarity})`;
           } else if (entry.id === "t_agility") {
             const amount = Math.round(14 * m);
@@ -2903,7 +3343,8 @@ export default function NeonPitRoguelikeV3() {
     const { w, padding } = s.arena;
     s.boss.active = true;
     s.boss.r = 38;
-    s.boss.maxHp = Math.round(980 + s.floor * 240);
+    // Increased boss HP significantly for better balance
+    s.boss.maxHp = Math.round(1400 + s.floor * 380); // Increased from 980+240 to 1400+380
     s.boss.hp = s.boss.maxHp;
     // Spawn boss at teleporter location if provided, otherwise center
     // Ensure boss doesn't spawn on top of player
@@ -2927,8 +3368,22 @@ export default function NeonPitRoguelikeV3() {
       s.boss.y = p.y + Math.sin(angle) * 200;
     }
     s.boss.timeLeft = seconds;
-    s.boss.spitT = 0.6;
+    s.boss.angle = 0; // Initialize angle for rotation
     s.boss.enraged = false;
+
+    // Initialize boss controller with abilities
+    try {
+      const abilities = [
+        new ConeAttackAbility({ cooldown: 4.0, phase2Effect: 'burning_ground' }),
+        new LineDashAbility({ cooldown: 5.0 }),
+        new RingPulseAbility({ cooldown: 6.0 })
+      ];
+      s.boss.controller = new BossController(s.boss, abilities);
+    } catch (error) {
+      console.error('Error initializing boss controller:', error);
+      // Fallback: set controller to null to prevent crashes
+      s.boss.controller = null;
+    }
 
     bumpShake(s, 8, 0.1);
     sfxBoss();
@@ -3090,7 +3545,7 @@ export default function NeonPitRoguelikeV3() {
 
       spawn: { t: 1.2, delay: 0.78, cap: 10 },
 
-      boss: { active: false, hp: 0, maxHp: 0, r: 0, x: 0, y: 0, timeLeft: 0, spitT: 0, enraged: false },
+      boss: { active: false, hp: 0, maxHp: 0, r: 0, x: 0, y: 0, timeLeft: 0, angle: 0, enraged: false, controller: null },
       bossPortalSpawned: false,
       camera: null,
 
@@ -3192,12 +3647,39 @@ export default function NeonPitRoguelikeV3() {
         pushCombatText(s, p.x, p.y - 35, "+8 Max HP", "#1fe06a", { size: 11, life: 0.8 });
       }
 
+      // Level up fanfare: enhanced visual effects
       pushCombatText(s, p.x, p.y - 18, `LEVEL ${s.level}`, "#2ea8ff", { size: 14, life: 0.95 });
       addExplosion(s, p.x, p.y, 1.5, 200);
+      
+      // Add particle burst for level up fanfare
+      for (let i = 0; i < 80; i++) {
+        const angle = (Math.PI * 2 * i) / 80;
+        const speed = 80 + Math.random() * 120;
+        s.particles.push({
+          x: p.x,
+          y: p.y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          r: 3 + Math.random() * 4,
+          t: 0,
+          life: 0.6 + Math.random() * 0.4,
+          hue: 200 + Math.random() * 40, // Blue-purple range
+        });
+      }
 
       sfxLevelUp();
 
       const choices = rollLevelChoices(s);
+      
+      // Find highest rarity for fanfare color
+      const rarityOrder = { [RARITY.COMMON]: 0, [RARITY.UNCOMMON]: 1, [RARITY.RARE]: 2, [RARITY.LEGENDARY]: 3 };
+      let highestRarity = RARITY.COMMON;
+      for (const choice of choices) {
+        if (rarityOrder[choice.rarity] > rarityOrder[highestRarity]) {
+          highestRarity = choice.rarity;
+        }
+      }
+      
       const nextUi = {
         ...uiRef.current,
         screen: "levelup",
@@ -3209,6 +3691,9 @@ export default function NeonPitRoguelikeV3() {
         timer: s.stageLeft,
         hint: "Level up",
         levelChoices: choices,
+        selectedChoiceIndex: 0, // Reset selection
+        levelUpFanfareT: 2.5, // Start fanfare animation (2.5 seconds)
+        highestRarity: highestRarity, // Store highest rarity for fanfare color
       };
 
       s.running = false;
@@ -3361,11 +3846,18 @@ export default function NeonPitRoguelikeV3() {
     const best = nearestInteractable(s);
     if (!best) return;
 
-    if (best.cost > 0 && p.coins < best.cost) {
-      pushCombatText(s, p.x, p.y - 24, `Need ${best.cost}`, "#ffd44a", { size: 12, life: 0.7 });
+    // Calculate dynamic cost for boss portal (percentage of current gold)
+    let actualCost = best.cost;
+    if (best.kind === INTERACT.BOSS_TP && best.cost === -1) {
+      const percentageCost = Math.round(p.coins * 0.2);
+      actualCost = Math.max(100, percentageCost);
+    }
+
+    if (actualCost > 0 && p.coins < actualCost) {
+      pushCombatText(s, p.x, p.y - 24, `Need ${actualCost}`, "#ffd44a", { size: 12, life: 0.7 });
       return;
     }
-    if (best.cost > 0) p.coins -= best.cost;
+    if (actualCost > 0) p.coins -= actualCost;
 
     best.used = true;
     sfxInteract();
@@ -3381,6 +3873,23 @@ export default function NeonPitRoguelikeV3() {
       );
 
       const rolled = rollChestChoices(s);
+      
+      // Chest opening fanfare: particle burst and visual effects
+      for (let i = 0; i < 50; i++) {
+        const angle = (Math.PI * 2 * i) / 50;
+        const speed = 60 + Math.random() * 100;
+        s.particles.push({
+          x: best.x,
+          y: best.y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          r: 2 + Math.random() * 3,
+          t: 0,
+          life: 0.5 + Math.random() * 0.5,
+          hue: 50 + Math.random() * 30, // Gold-yellow range
+        });
+      }
+      
       const nextUi = {
         ...uiRef.current,
         screen: "levelup",
@@ -3392,6 +3901,8 @@ export default function NeonPitRoguelikeV3() {
         timer: s.stageLeft,
         hint: `Chest reward: ${rolled.bucket}`,
         levelChoices: rolled.choices,
+        selectedChoiceIndex: 0, // Reset selection
+        chestOpenFanfareT: 0.3, // Brief pause before showing choices (0.3 seconds)
       };
 
       uiRef.current = nextUi;
@@ -3453,17 +3964,8 @@ export default function NeonPitRoguelikeV3() {
     const p = s.player;
     if (p.abilityT > 0 || p.hp <= 0) return;
     
-    // For quickdraw ability, check if there's already an active seeking explosive bullet
-    if (p.abilityId === "quickdraw") {
-      // Check if there's an active explosive bullet that's seeking (not yet injected)
-      const hasActiveSeekingBullet = s.bullets.some(b => 
-        b.explosive && b.seeking && !b.injected && b.playerAbilityRef === p
-      );
-      if (hasActiveSeekingBullet) {
-        // Already have a bullet seeking, can't use ability again yet
-        return;
-      }
-    }
+        // Ability cooldown is now enforced by abilityT > 0 check above
+        // No need to check for active seeking bullets - cooldown prevents spamming
     
 
     const keys = keysRef.current;
@@ -3509,6 +4011,9 @@ export default function NeonPitRoguelikeV3() {
     
     if (p.abilityId === "quickdraw") {
       // Explosive Shot: Injects onto an enemy, then explodes after 2 seconds
+      // Start cooldown immediately to prevent spamming (8 second cooldown)
+      p.abilityT = p.abilityCd * (p.abilityCdMult || 1);
+      
       const tgt = acquireTarget(s, p.x, p.y);
       if (tgt) {
         const dx = tgt.x - p.x;
@@ -3540,13 +4045,16 @@ export default function NeonPitRoguelikeV3() {
         explosiveBullet.explosionRadius = 120; // Large explosion radius
         explosiveBullet.explosionDmg = dmg * 0.8; // Explosion damage (reduced from 1.2x)
         explosiveBullet.seeking = true; // Bullet seeks nearest enemy
-        explosiveBullet.playerAbilityRef = p; // Store player reference for cooldown start on injection
+        explosiveBullet.playerAbilityRef = null; // No longer needed since cooldown starts immediately
         
-        // DON'T start cooldown here - it will start when bullet injects onto enemy
-        // Ability is disabled while seeking (checked in useAbility function)
+        // Visual effects
+        addParticle(s, p.x, p.y, 20, 40);
+        playBeep({ type: "square", f0: 200, f1: 120, dur: 0.12, gain: 0.18, pan: 0 }); // Deeper, more powerful sound
       } else {
         // No target found - still fire bullet (it will seek when enemies spawn)
-        // But don't start cooldown yet - wait for it to hit something
+        const totalDmg = (p.weapons ? p.weapons.reduce((sum, w) => sum + w.weaponDamage, 0) : 0) * 1.2;
+        const dmg = totalDmg * 1.6;
+        
         const explosiveBullet = shootBullet(s, p.x, p.y, 0, dmg, 100, {
           r: 7.0,
           pierce: 0,
@@ -3565,12 +4073,12 @@ export default function NeonPitRoguelikeV3() {
         explosiveBullet.explosionRadius = 120;
         explosiveBullet.explosionDmg = dmg * 0.8;
         explosiveBullet.seeking = true;
-        explosiveBullet.playerAbilityRef = p;
+        explosiveBullet.playerAbilityRef = null;
+        
+        // Visual effects
+        addParticle(s, p.x, p.y, 20, 40);
+        playBeep({ type: "square", f0: 200, f1: 120, dur: 0.12, gain: 0.18, pan: 0 });
       }
-      
-      // Visual effects
-      addParticle(s, p.x, p.y, 20, 40);
-      playBeep({ type: "square", f0: 200, f1: 120, dur: 0.12, gain: 0.18, pan: 0 }); // Deeper, more powerful sound
       return;
     }
 
@@ -3960,9 +4468,27 @@ export default function NeonPitRoguelikeV3() {
           
           // Calculate blade positions and check for enemy hits
           const orbitRadius = Math.max(40, (weapon.weaponMeleeR || 60) * p.sizeMult);
-          const dmgBase = weapon.weaponDamage * (0.84 + 0.03 * s.floor);
+          // Reduced floor damage scaling from +3% to +1.5% per floor
+      const dmgBase = weapon.weaponDamage * (0.84 + 0.015 * s.floor);
+          
+          // Apply berserker damage multiplier (based on missing HP)
+          let berserkerBonus = 1.0;
+          if (p.berserkerMult > 0) {
+            const hpPercent = p.hp / p.maxHp;
+            const missingHpPercent = 1 - hpPercent;
+            berserkerBonus = 1 + (p.berserkerMult * missingHpPercent);
+          }
+          
+          // Apply speed demon damage multiplier (based on movement speed)
+          let speedBonus = 1.0;
+          if (p.speedDamageMult > 0) {
+            const currentSpeed = p.speedBase + p.speedBonus;
+            speedBonus = 1 + (p.speedDamageMult * (currentSpeed / 100));
+          }
+          
+          const dmgWithBonuses = dmgBase * berserkerBonus * speedBonus;
           const crit = Math.random() < clamp(p.critChance, 0, 0.8);
-          const dmg = crit ? dmgBase * 1.6 : dmgBase;
+          const dmg = crit ? dmgWithBonuses * 1.6 : dmgWithBonuses;
           
           const bladeCount = weapon.orbitBlades || 2;
           const angleStep = (Math.PI * 2) / bladeCount;
@@ -3979,9 +4505,11 @@ export default function NeonPitRoguelikeV3() {
               const hitRadius = 20; // Blade hit radius
               if (dist2 <= (hitRadius + e.r) ** 2) {
                 // Check cooldown per enemy (prevent spam) - use weapon-specific key
+                // Longer cooldown (1.5s) ensures each enemy is only hit once per full rotation
+                // Rotation speed is 3.5 rad/s, so full rotation takes ~1.8s
                 const enemyKey = `orbitHit_${weapon.id}_${e.id || e.x}_${e.y}`;
                 if (!e[enemyKey] || e[enemyKey] <= 0) {
-                  e[enemyKey] = 0.3; // 0.3s cooldown per enemy per weapon
+                  e[enemyKey] = 1.5; // 1.5s cooldown per enemy - prevents multiple hits per rotation
                   
                   let finalDmg = dmg;
                   if (p.bigBonkChance > 0 && Math.random() < p.bigBonkChance) {
@@ -5078,13 +5606,8 @@ export default function NeonPitRoguelikeV3() {
             b.y = s.boss.y;
             b.explodeAfter = 2.0; // Start 2 second countdown
             
-            // Reset cooldown to full 8 seconds when bullet injects
-            if (b.playerAbilityRef) {
-              const p = b.playerAbilityRef;
-              // Reset to full cooldown (8 seconds)
-              p.abilityT = p.abilityCd * (p.abilityCdMult || 1);
-              b.playerAbilityRef = null; // Clear reference
-            }
+            // Cooldown is now started immediately when ability is used, not when bullet injects
+            // Remove old cooldown logic
             
             // Visual feedback for injection
             addParticle(s, s.boss.x, s.boss.y, 8, 40, { size: 2, speed: 0.6 });
@@ -5117,16 +5640,60 @@ export default function NeonPitRoguelikeV3() {
           return true; // Injected bullet waiting to explode
         }
         if (b.seeking && !b.injected) {
-          // Seeking bullet - keep alive for longer to find target, but expire after extended time
-          const maxSeekTime = 15.0; // Allow up to 15 seconds to find a target
+          // Seeking bullet - explode after 8 seconds if it hasn't found a target (matches ability cooldown)
+          const maxSeekTime = 8.0; // Match ability cooldown (8 seconds)
           if (b.t > maxSeekTime) {
-            // Bullet expired without finding target - start cooldown now
-            if (b.playerAbilityRef) {
-              const p = b.playerAbilityRef;
-              p.abilityT = p.abilityCd * (p.abilityCdMult || 1);
-              b.playerAbilityRef = null;
+            // Bullet expired - explode it now
+            const explosionR = b.explosionRadius || 120;
+            const explosionDmg = b.explosionDmg || b.dmg * 0.8;
+            const r2 = explosionR * explosionR;
+            const explosionX = b.x;
+            const explosionY = b.y;
+            const p = s.player; // Get player reference for knockback
+            
+            // Damage all enemies in explosion radius
+            for (const ee of s.enemies) {
+              if (ee.hp <= 0) continue;
+              const d2 = dist2(ee.x, ee.y, explosionX, explosionY);
+              if (d2 <= r2) {
+                const dist = Math.sqrt(d2);
+                const falloff = dist > 0 ? Math.max(0.3, 1 - (dist / explosionR)) : 1;
+                const dmg = explosionDmg * falloff;
+                ee.hp -= dmg;
+                ee.hitT = 0.12;
+                const dealt = Math.max(1, Math.round(dmg));
+                pushCombatText(s, ee.x, ee.y - 14, String(dealt), "#ffaa00", { size: 12, life: 0.75 });
+                
+                // Knockback
+                if (p && p.knockback > 0) {
+                  const dx = ee.x - explosionX;
+                  const dy = ee.y - explosionY;
+                  const dd = Math.hypot(dx, dy) || 1;
+                  ee.x += (dx / dd) * p.knockback * 0.12;
+                  ee.y += (dy / dd) * p.knockback * 0.12;
+                }
+              }
             }
-            return false; // Destroy the bullet
+            
+            // Damage boss if in range
+            if (s.boss.active && s.boss.hp > 0) {
+              const bossD2 = dist2(s.boss.x, s.boss.y, explosionX, explosionY);
+              if (bossD2 <= r2) {
+                const dist = Math.sqrt(bossD2);
+                const falloff = dist > 0 ? Math.max(0.3, 1 - (dist / explosionR)) : 1;
+                s.boss.hp -= explosionDmg * falloff;
+                const dealt = Math.max(1, Math.round(explosionDmg * falloff));
+                pushCombatText(s, s.boss.x, s.boss.y - s.boss.r - 10, String(dealt), "#ffaa00", { size: 16, life: 0.9, crit: true });
+              }
+            }
+            
+            // Explosion effect
+            addExplosion(s, explosionX, explosionY, 2.0, 30);
+            addParticle(s, explosionX, explosionY, 30, 30, { size: 4, speed: 1.5, glow: true });
+            bumpShake(s, 8, 0.15);
+            s.hitStopT = Math.max(s.hitStopT, 0.04);
+            
+            return false; // Destroy the bullet after explosion
           }
           return true; // Still seeking, keep it alive
         }
@@ -5353,39 +5920,106 @@ export default function NeonPitRoguelikeV3() {
     if (s.boss.active) {
       s.boss.timeLeft = Math.max(0, s.boss.timeLeft - dt);
 
-      const dx = p.x - s.boss.x;
-      const dy = p.y - s.boss.y;
-      const d = Math.hypot(dx, dy) || 1;
-      const ux = dx / d;
-      const uy = dy / d;
-
-      const enr = s.boss.hp / s.boss.maxHp < 0.35;
-      s.boss.enraged = enr;
-      const bossSpeed = (84 + s.floor * 3.5) * (enr ? 1.2 : 1); // Reduced by ~30% for slower-paced gameplay
-
-      s.boss.x += ux * bossSpeed * dt;
-      s.boss.y += uy * bossSpeed * dt;
-      // Clamp boss to level bounds
-      if (s.levelData) {
-        s.boss.x = clamp(s.boss.x, padding, s.levelData.w - padding);
-        s.boss.y = clamp(s.boss.y, padding, s.levelData.h - padding);
-      } else {
-      s.boss.x = clamp(s.boss.x, padding, w - padding);
-      s.boss.y = clamp(s.boss.y, padding, h - padding);
+      // Check phase transition
+      const wasPhase2 = s.boss.enraged;
+      const isPhase2 = s.boss.hp / s.boss.maxHp <= 0.5;
+      if (isPhase2 && !wasPhase2) {
+        // Phase 2 transition effect
+        s.boss.enraged = true;
+        bumpShake(s, 12, 0.15);
+        addExplosion(s, s.boss.x, s.boss.y, 3.0, 200);
+        addParticle(s, s.boss.x, s.boss.y, 50, 100, { size: 6, speed: 2.0, glow: true });
+        pushCombatText(s, s.boss.x, s.boss.y - s.boss.r - 20, "ENRAGED!", "#ff0000", { size: 20, life: 2.0, crit: true });
       }
 
-      s.boss.spitT = Math.max(0, s.boss.spitT - dt);
-      if (s.boss.spitT <= 0) {
-        // Check line of sight before boss can shoot
-        const bossHasLOS = !s.levelData || hasLineOfSight(s.boss.x, s.boss.y, p.x, p.y, s.levelData, 10);
-        if (bossHasLOS) {
-          const a = Math.atan2(dy, dx);
-          const shots = enr ? 3 : 2;
-          for (let i = 0; i < shots; i++) {
-            const aa = a + lerp(-0.22, 0.22, shots === 1 ? 0.5 : i / (shots - 1));
-            shootBullet(s, s.boss.x, s.boss.y, aa, 18 + s.floor * 1.2, 520, { enemy: true, r: 8.2, life: 2.2, color: "#ff5d5d" });
+      // Update boss controller (handles abilities and rotation)
+      if (s.boss.controller) {
+        try {
+          s.boss.controller.update(p, dt, s.floor);
+          
+          // Check for ability hits
+          const hitResult = s.boss.controller.checkHits(p, s.floor);
+          if (hitResult) {
+            const did = applyPlayerDamage(s, hitResult.damage, hitResult.ability.name, {
+              shakeMag: 2.5,
+              shakeTime: 0.08,
+              hitStop: 0.02,
+              fromX: s.boss.x,
+              fromY: s.boss.y
+            });
+            if (did) {
+              const xNorm = clamp((p.x / (s.arena.w || 1)) * 2 - 1, -1, 1);
+              sfxHit(xNorm);
+            }
           }
-          s.boss.spitT = enr ? 0.55 : 0.85;
+          
+          // Handle burning ground from phase 2 abilities
+          if (s.boss.controller.abilities) {
+            for (const ability of s.boss.controller.abilities) {
+              if (ability && ability.burningGround && ability.burningGround.life > 0) {
+                ability.burningGround.t += dt;
+                ability.burningGround.life -= dt;
+                
+                if (ability.burningGround.life > 0) {
+                  // Check if player is in burning ground
+                  const dx = p.x - ability.burningGround.x;
+                  const dy = p.y - ability.burningGround.y;
+                  const dist = Math.hypot(dx, dy);
+                  const angle = Math.atan2(dy, dx);
+                  let angleDiff = angle - ability.burningGround.angle;
+                  // Normalize angle difference
+                  while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+                  while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+                  
+                  if (dist <= ability.burningGround.range && Math.abs(angleDiff) <= ability.burningGround.angleWidth / 2) {
+                    ability.burningGround.lastTick = (ability.burningGround.lastTick || 0) + dt;
+                    if (ability.burningGround.lastTick >= ability.burningGround.tickRate) {
+                      ability.burningGround.lastTick = 0;
+                      const did = applyPlayerDamage(s, ability.burningGround.dmg, "burning ground", {
+                        shakeMag: 0.5,
+                        shakeTime: 0.02,
+                        hitStop: 0,
+                        fromX: ability.burningGround.x,
+                        fromY: ability.burningGround.y
+                      });
+                    }
+                  }
+                } else {
+                  // Remove expired burning ground
+                  ability.burningGround = null;
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error in boss controller update:', error);
+          // Reset controller on error to prevent freeze
+          s.boss.controller = null;
+        }
+      }
+
+      // Boss movement (only when not in active ability state)
+      const currentState = s.boss.controller?.getCurrentState();
+      if (currentState !== BOSS_ABILITY_STATE.ACTIVE) {
+        const dx = p.x - s.boss.x;
+        const dy = p.y - s.boss.y;
+        const d = Math.hypot(dx, dy) || 1;
+        const ux = dx / d;
+        const uy = dy / d;
+
+        const enr = s.boss.hp / s.boss.maxHp < 0.5; // Phase 2 at 50%
+        s.boss.enraged = enr;
+        const bossSpeed = (84 + s.floor * 3.5) * (enr ? 1.2 : 1);
+
+        s.boss.x += ux * bossSpeed * dt;
+        s.boss.y += uy * bossSpeed * dt;
+        // Clamp boss to level bounds
+        if (s.levelData) {
+          s.boss.x = clamp(s.boss.x, padding, s.levelData.w - padding);
+          s.boss.y = clamp(s.boss.y, padding, s.levelData.h - padding);
+        } else {
+          s.boss.x = clamp(s.boss.x, padding, w - padding);
+          s.boss.y = clamp(s.boss.y, padding, h - padding);
         }
       }
 
@@ -5884,22 +6518,52 @@ export default function NeonPitRoguelikeV3() {
       ctx.save();
       ctx.translate(0, -25);
       ctx.globalAlpha = 0.9;
-      ctx.fillStyle = "rgba(0,0,0,0.7)";
-      const labelW = 70;
-      ctx.fillRect(-labelW/2, -8, labelW, 16);
+      
+      let label = "";
+      let labelW = 70;
+      let showPrice = false;
+      
+      if (it.kind === INTERACT.CHEST) {
+        label = "Chest";
+        showPrice = true;
+        labelW = 90; // Wider for price
+      } else if (it.kind === INTERACT.SHRINE) label = "Buff";
+      else if (it.kind === INTERACT.MICROWAVE) label = "HP+";
+      else if (it.kind === INTERACT.GREED) {
+        label = "Greed";
+        showPrice = true;
+        labelW = 90;
+      } else if (it.kind === INTERACT.BOSS_TP) {
+        label = "Boss";
+        showPrice = true;
+        labelW = 90;
+      }
+      
+      // Draw label text (no background box)
       ctx.fillStyle = "#e6e8ff";
       ctx.font = "10px ui-sans-serif, system-ui";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
+      ctx.fillText(label, 0, showPrice ? -4 : 0);
       
-      let label = "";
-      if (it.kind === INTERACT.CHEST) label = "Chest";
-      else if (it.kind === INTERACT.SHRINE) label = "Buff";
-      else if (it.kind === INTERACT.MICROWAVE) label = "HP+";
-      else if (it.kind === INTERACT.GREED) label = "Greed";
-      else if (it.kind === INTERACT.BOSS_TP) label = "Boss";
+      // Draw price for chests and other paid interactables
+      if (showPrice) {
+        const p = s.player;
+        // Calculate dynamic cost for boss portal (percentage of current gold)
+        let displayCost = it.cost;
+        if (it.kind === INTERACT.BOSS_TP && it.cost === -1) {
+          const percentageCost = Math.round(p.coins * 0.2);
+          displayCost = Math.max(100, percentageCost);
+        }
+        
+        if (displayCost > 0) {
+          const canAfford = p.coins >= displayCost;
+          ctx.fillStyle = canAfford ? "#ffd44a" : "#ff5d5d";
+          ctx.font = "bold 11px ui-sans-serif, system-ui";
+          ctx.fillText(`${displayCost}`, 0, 10);
+        }
+      }
       
-      ctx.fillText(label, 0, 0);
       ctx.restore();
       
       ctx.restore();
@@ -6208,6 +6872,12 @@ export default function NeonPitRoguelikeV3() {
       ctx.restore();
     }
 
+    // Draw boss danger zones FIRST (before entities) so they appear on the ground
+    if (s.boss.active && s.boss.controller) {
+      const dangerZones = s.boss.controller.getAllDangerZones(p);
+      drawDangerZones(s, ctx, cam, dangerZones, isoScaleRef.current);
+    }
+
     // In isometric mode, we need to depth sort all entities (player + enemies) by isometric Y
     // Entities with higher isometric Y (further back) should be drawn first
     if (ISO_MODE) {
@@ -6451,7 +7121,13 @@ export default function NeonPitRoguelikeV3() {
         }
       }
     } else {
-      // Top-down mode: draw enemies and player normally (no depth sorting needed)
+      // Top-down mode: draw danger zones first, then enemies and player
+      if (s.boss.active && s.boss.controller) {
+        const dangerZones = s.boss.controller.getAllDangerZones(p);
+        drawDangerZones(s, ctx, cam, dangerZones, isoScaleRef.current);
+      }
+      
+      // Draw enemies and player normally (no depth sorting needed)
       for (const e of s.enemies) {
         if (e.hp <= 0) continue;
         const slowed = e.slowT > 0;
@@ -6633,6 +7309,68 @@ export default function NeonPitRoguelikeV3() {
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
     ctx.fill();
+    }
+    
+    // Draw orbiting blades
+    if (p.weapons) {
+      for (const weapon of p.weapons) {
+        if (weapon.id === "orbiting_blades" && weapon.weaponMode === "orbit" && weapon.orbitAngle !== undefined) {
+          const orbitRadius = Math.max(40, (weapon.weaponMeleeR || 60) * p.sizeMult);
+          const bladeCount = weapon.orbitBlades || 2;
+          const angleStep = (Math.PI * 2) / bladeCount;
+          
+          ctx.globalAlpha = 1.0;
+          ctx.strokeStyle = "#c0c0c0";
+          ctx.fillStyle = "#ffffff";
+          ctx.lineWidth = 2;
+          
+          for (let i = 0; i < bladeCount; i++) {
+            const bladeAngle = weapon.orbitAngle + angleStep * i;
+            let bladeX, bladeY;
+            
+            if (ISO_MODE) {
+              // Convert to isometric coordinates for orbiting blades
+              const { w, h } = s.arena;
+              const scale = isoScaleRef.current;
+              const playerIso = worldToIso(p.x, p.y, 0, scale);
+              const camIso = worldToIso(cam.x, cam.y, 0, scale);
+              const playerScreenX = w / 2 + playerIso.x - camIso.x;
+              const playerScreenY = h / 2 + playerIso.y - camIso.y;
+              
+              // Calculate blade position in world space, then convert to isometric
+              const worldBladeX = p.x + Math.cos(bladeAngle) * orbitRadius;
+              const worldBladeY = p.y + Math.sin(bladeAngle) * orbitRadius;
+              const bladeIso = worldToIso(worldBladeX, worldBladeY, 0, scale);
+              bladeX = w / 2 + bladeIso.x - camIso.x;
+              bladeY = h / 2 + bladeIso.y - camIso.y;
+            } else {
+              bladeX = p.x + Math.cos(bladeAngle) * orbitRadius;
+              bladeY = p.y + Math.sin(bladeAngle) * orbitRadius;
+            }
+            
+            // Draw blade as a small rotating rectangle/sword shape
+            ctx.save();
+            ctx.translate(bladeX, bladeY);
+            ctx.rotate(bladeAngle + Math.PI / 2); // Rotate blade perpendicular to orbit
+            
+            // Blade shape (small rectangle)
+            const bladeLength = 12;
+            const bladeWidth = 4;
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(-bladeWidth / 2, -bladeLength / 2, bladeWidth, bladeLength);
+            
+            // Blade glow
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = "#ffffff";
+            ctx.strokeStyle = "#c0c0c0";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(-bladeWidth / 2, -bladeLength / 2, bladeWidth, bladeLength);
+            ctx.shadowBlur = 0;
+            
+            ctx.restore();
+          }
+        }
+      }
     }
 
     if (p.shield > 0) {
@@ -6860,7 +7598,7 @@ export default function NeonPitRoguelikeV3() {
       // Reset alpha
       ctx.globalAlpha = 1.0;
     }
-    
+
     // Draw auras (player AoE effects)
     for (const aura of s.auras) {
       const t = clamp(1 - aura.t / aura.life, 0, 1);
@@ -7124,16 +7862,8 @@ export default function NeonPitRoguelikeV3() {
       const hotbarY = h - 80; // Bottom of screen
       const cooldownPercent = p.abilityT > 0 ? Math.min(1, p.abilityT / (p.abilityCd * (p.abilityCdMult || 1))) : 0;
       
-      // For quickdraw ability, check if there's an active seeking bullet
-      let hasActiveSeekingBullet = false;
-      if (p.abilityId === "quickdraw") {
-        hasActiveSeekingBullet = s.bullets.some(b => 
-          b.explosive && b.seeking && !b.injected && b.playerAbilityRef === p
-        );
-      }
-      
-      // Ability is ready only if cooldown is 0 AND no active seeking bullet
-      const isReady = cooldownPercent === 0 && !hasActiveSeekingBullet;
+      // Ability is ready when cooldown is 0 (cooldown now starts immediately when ability is used)
+      const isReady = cooldownPercent === 0;
       
       // Background square
       ctx.fillStyle = isReady ? "rgba(40,60,80,0.9)" : "rgba(80,20,20,0.9)";
@@ -7374,6 +8104,72 @@ export default function NeonPitRoguelikeV3() {
         ctx.fillStyle = "#ffd44a";
         ctx.fillText("Admin", w * 0.5, buttonY + buttonSpacing * 2 + 32);
         
+        // Mute button
+        const muteButtonX = w * 0.5 - 120;
+        const muteButtonY = buttonY + buttonSpacing * 3;
+        const muteButtonW = 240;
+        const muteButtonH = 50;
+        const isMuted = u.muted;
+        
+        ctx.fillStyle = isMuted ? "rgba(200,60,60,0.9)" : "rgba(40,60,80,0.9)";
+        ctx.fillRect(muteButtonX, muteButtonY, muteButtonW, muteButtonH);
+        ctx.strokeStyle = isMuted ? "#ff5d5d" : "#2ea8ff";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(muteButtonX, muteButtonY, muteButtonW, muteButtonH);
+        ctx.fillStyle = isMuted ? "#ff5d5d" : "#2ea8ff";
+        ctx.font = "18px ui-sans-serif, system-ui";
+        ctx.fillText(isMuted ? "🔇 Muted (M)" : "🔊 Sound (M)", w * 0.5, muteButtonY + 32);
+        
+        // Music volume control
+        const volumeButtonY = muteButtonY + buttonSpacing;
+        const volumeBarW = 200;
+        const volumeBarH = 8;
+        const volumeBarX = w * 0.5 - volumeBarW / 2;
+        const volumeBarY = volumeButtonY + 21;
+        const musicVolume = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+        
+        // Volume label
+        ctx.fillStyle = "#e6e8ff";
+        ctx.font = "14px ui-sans-serif, system-ui";
+        ctx.textAlign = "center";
+        ctx.fillText("Music Volume", w * 0.5, volumeButtonY + 16);
+        
+        // Volume bar background
+        ctx.fillStyle = "rgba(40,60,80,0.9)";
+        ctx.fillRect(volumeBarX, volumeBarY, volumeBarW, volumeBarH);
+        ctx.strokeStyle = "#2ea8ff";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(volumeBarX, volumeBarY, volumeBarW, volumeBarH);
+        
+        // Volume bar fill
+        ctx.fillStyle = "#2ea8ff";
+        ctx.fillRect(volumeBarX, volumeBarY, volumeBarW * musicVolume, volumeBarH);
+        
+        // Volume buttons
+        const volButtonSize = 24;
+        const volMinusX = volumeBarX - volButtonSize - 8;
+        const volPlusX = volumeBarX + volumeBarW + 8;
+        const volButtonY = volumeButtonY + 10;
+        
+        // Minus button
+        ctx.fillStyle = "rgba(40,60,80,0.9)";
+        ctx.fillRect(volMinusX, volButtonY, volButtonSize, volButtonSize);
+        ctx.strokeStyle = "#2ea8ff";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(volMinusX, volButtonY, volButtonSize, volButtonSize);
+        ctx.fillStyle = "#2ea8ff";
+        ctx.font = "16px ui-sans-serif, system-ui";
+        ctx.fillText("-", volMinusX + volButtonSize / 2, volButtonY + 18);
+        
+        // Plus button
+        ctx.fillStyle = "rgba(40,60,80,0.9)";
+        ctx.fillRect(volPlusX, volButtonY, volButtonSize, volButtonSize);
+        ctx.strokeStyle = "#2ea8ff";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(volPlusX, volButtonY, volButtonSize, volButtonSize);
+        ctx.fillStyle = "#2ea8ff";
+        ctx.fillText("+", volPlusX + volButtonSize / 2, volButtonY + 18);
+        
         // Admin section
         if (u.showAdmin) {
           ctx.fillStyle = "rgba(20,30,40,0.95)";
@@ -7553,46 +8349,230 @@ export default function NeonPitRoguelikeV3() {
 
     if (u.screen === "levelup") {
       const choices = u.levelChoices || [];
+      const selectedIndex = u.selectedChoiceIndex || 0;
+      const s = stateRef.current;
+      
+      // Don't show choices during chest opening fanfare
+      const showChoices = (u.chestOpenFanfareT || 0) <= 0;
+      
+      // Background with fanfare effects
       ctx.fillStyle = "rgba(0,0,0,0.76)";
       ctx.fillRect(0, 0, w, h);
+      
+      // Level up fanfare: animated text and screen flash (rarity-colored)
+      if (u.levelUpFanfareT > 0) {
+        const fanfareProgress = 1 - (u.levelUpFanfareT / 2.5);
+        const textScale = 1 + Math.sin(fanfareProgress * Math.PI) * 0.3; // Scale from 1.0 to 1.3
+        const textAlpha = Math.min(1, fanfareProgress * 2);
+        const glowIntensity = Math.sin(fanfareProgress * Math.PI * 4) * 0.5 + 0.5;
+        
+        // Get rarity color for fanfare
+        const rarityCol = RARITY_COLOR[u.highestRarity] || RARITY_COLOR[RARITY.COMMON];
+        const rarityOrder = { [RARITY.COMMON]: 0, [RARITY.UNCOMMON]: 1, [RARITY.RARE]: 2, [RARITY.LEGENDARY]: 3 };
+        const rarityLevel = rarityOrder[u.highestRarity] || 0;
+        
+        // More intense effects for higher rarities
+        const intensityMult = 1 + rarityLevel * 0.3; // 1.0, 1.3, 1.6, 1.9
+        const flashIntensity = rarityLevel >= 2 ? 1.2 : rarityLevel >= 1 ? 0.8 : 0.5; // Stronger flash for Rare/Legendary
+        
+        ctx.save();
+        ctx.globalAlpha = textAlpha;
+        // Parse hex color to RGB
+        const hex = rarityCol.bg;
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        ctx.fillStyle = `rgba(${r},${g},${b},${0.8 + glowIntensity * 0.2})`;
+        ctx.font = `bold ${Math.round(24 + textScale * 8 * intensityMult)}px ui-sans-serif, system-ui`;
+        ctx.textAlign = "center";
+        ctx.shadowBlur = 20 * glowIntensity * intensityMult;
+        ctx.shadowColor = rarityCol.bg;
+        ctx.fillText("LEVEL UP!", w * 0.5, h * 0.35);
+        ctx.shadowBlur = 0;
+        ctx.restore();
+        
+        // Screen flash effect (rarity-colored, more intense for higher rarities)
+        if (fanfareProgress < 0.15) {
+          const flashAlpha = (0.15 - fanfareProgress) / 0.15 * flashIntensity;
+          ctx.globalAlpha = flashAlpha;
+          ctx.fillStyle = rarityCol.bg;
+          ctx.fillRect(0, 0, w, h);
+          ctx.globalAlpha = 1.0;
+        }
+        
+        // Rarity-colored border flash (more pulses for higher rarities)
+        const pulseCount = rarityLevel >= 3 ? 8 : rarityLevel >= 2 ? 6 : 4;
+        const borderAlpha = Math.sin(fanfareProgress * Math.PI * pulseCount) * 0.4 + 0.3;
+        ctx.strokeStyle = `${rarityCol.bg}${Math.floor(borderAlpha * 255).toString(16).padStart(2, '0')}`;
+        ctx.lineWidth = 8 + rarityLevel * 2; // Thicker border for higher rarities
+        ctx.strokeRect(0, 0, w, h);
+      }
+      
+      // Chest opening fanfare: light beam effect
+      if (u.chestOpenFanfareT > 0 && !showChoices) {
+        const fanfareProgress = 1 - (u.chestOpenFanfareT / 0.3);
+        const beamAlpha = Math.sin(fanfareProgress * Math.PI) * 0.6;
+        
+        // Light beam from center
+        const gradient = ctx.createLinearGradient(w * 0.5, h * 0.3, w * 0.5, h * 0.7);
+        gradient.addColorStop(0, `rgba(255,212,74,${beamAlpha})`);
+        gradient.addColorStop(0.5, `rgba(255,212,74,${beamAlpha * 0.5})`);
+        gradient.addColorStop(1, `rgba(255,212,74,0)`);
+        ctx.fillStyle = gradient;
+        ctx.fillRect(w * 0.3, h * 0.3, w * 0.4, h * 0.4);
+      }
+      
+      if (showChoices) {
+        ctx.fillStyle = "#e6e8ff";
+        ctx.font = "18px ui-sans-serif, system-ui";
+        ctx.textAlign = "center";
+        ctx.fillText("Choose an upgrade", w * 0.5, 78);
+        ctx.font = "12px ui-sans-serif, system-ui";
+        ctx.fillStyle = "rgba(230,232,255,0.8)";
+        ctx.fillText("A/D to scroll, E to select | Click or press 1 2 3", w * 0.5, 100);
 
-      ctx.fillStyle = "#e6e8ff";
-      ctx.font = "18px ui-sans-serif, system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText("Choose an upgrade", w * 0.5, 78);
-      ctx.font = "12px ui-sans-serif, system-ui";
-      ctx.fillStyle = "rgba(230,232,255,0.8)";
-      ctx.fillText("Click or press 1 2 3", w * 0.5, 100);
-
+      // Position cards by center to avoid scaling issues
       const cardW = Math.min(320, Math.max(240, w * 0.26));
-      const cardH = 180; // Increased height for description + preview stats
+      const cardH = 180;
       const gap = 18;
-      const totalW = cardW * 3 + gap * 2;
-      const startX = w * 0.5 - totalW * 0.5;
+      
+      // Account for max scale (1.05x) when calculating spacing
+      const maxScaledW = cardW * 1.05;
+      const spacing = maxScaledW + gap; // Space between card centers
+      
+      // Center the group of 3 cards
+      const screenCenterX = w * 0.5;
+      const leftCardCenterX = screenCenterX - spacing;
+      const centerCardCenterX = screenCenterX;
+      const rightCardCenterX = screenCenterX + spacing;
+      
+      const cardCenters = [leftCardCenterX, centerCardCenterX, rightCardCenterX];
       const y = h * 0.5 - cardH * 0.5;
+      
+      // Staggered card animation - cards appear one at a time
+      const cardDelay = 0.2; // Delay between each card (seconds) - slightly longer for more suspense
+      const cardAnimDuration = 0.5; // Animation duration for each card - slightly longer
+      const fanfareTime = u.levelUpFanfareT || 0;
+      const fanfareDuration = 2.5;
+      const timeSinceFanfare = Math.max(0, fanfareDuration - fanfareTime);
 
       for (let i = 0; i < 3; i++) {
         const c = choices[i];
-        const x = startX + i * (cardW + gap);
+        if (!c) continue;
+        
+        // Calculate card entrance animation
+        const cardStartTime = i * cardDelay;
+        const cardAnimProgress = Math.max(0, Math.min(1, (timeSinceFanfare - cardStartTime) / cardAnimDuration));
+        const cardEase = 1 - Math.pow(1 - cardAnimProgress, 3); // Ease out cubic
+        
+        // Card is hidden until its animation starts
+        if (cardAnimProgress <= 0) continue;
+        
+        const isSelected = i === selectedIndex;
+        const col = RARITY_COLOR[c.rarity] || RARITY_COLOR[RARITY.COMMON];
+        
+        // Enhanced selection animation: bounce, glow, and pulse effects
+        const gameTime = s?.t || 0;
+        let selectionScale = isSelected ? 1.08 : 0.98; // Larger scale when selected
+        let selectionGlow = isSelected ? 1.0 : 0.3;
+        
+        // Bounce effect when selected (spring animation)
+        if (isSelected) {
+          const bounceTime = gameTime * 12; // Fast bounce
+          const bounceAmount = Math.abs(Math.sin(bounceTime)) * 0.05; // Bounce up to 5% extra
+          selectionScale += bounceAmount;
+          
+          // Pulse glow intensity
+          const glowPulse = Math.sin(gameTime * 15) * 0.3 + 0.7; // Pulse between 0.4 and 1.0
+          selectionGlow = glowPulse;
+        }
+        
+        const pulse = Math.sin(gameTime * 8) * 0.1 + 0.9;
+        const borderPulse = isSelected ? 1.0 + Math.sin(gameTime * 12) * 0.3 : 1.0; // Stronger pulse when selected
+        
+        // Card center position
+        const cardCenterX = cardCenters[i];
+        
         ctx.save();
-        ctx.translate(x, y);
+        // Reset transform to ensure clean state
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        // Scale around card center
+        ctx.translate(cardCenterX, y + cardH / 2);
+        
+        // Entrance animation: scale from 0.3 to final scale, fade in, slide up slightly
+        const entranceScale = 0.3 + cardEase * (selectionScale - 0.3);
+        const entranceAlpha = cardEase;
+        const entranceY = (1 - cardEase) * 30; // Slide up from below
+        
+        ctx.scale(entranceScale, entranceScale);
+        ctx.globalAlpha = entranceAlpha;
+        ctx.translate(0, entranceY);
+        ctx.translate(-cardW / 2, -cardH / 2);
 
-        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        // Rarity-colored background gradient (more intense when selected)
+        const gradient = ctx.createLinearGradient(0, 0, cardW, cardH);
+        const bgAlpha = 0.15 + (isSelected ? 0.25 : 0); // Much brighter when selected
+        gradient.addColorStop(0, `rgba(0,0,0,0.55)`);
+        gradient.addColorStop(0.5, `${col.bg}${Math.floor(bgAlpha * 255).toString(16).padStart(2, '0')}`);
+        gradient.addColorStop(1, `rgba(0,0,0,0.55)`);
+        ctx.fillStyle = gradient;
         ctx.fillRect(0, 0, cardW, cardH);
-
-        if (c) {
-          const col = RARITY_COLOR[c.rarity] || RARITY_COLOR[RARITY.COMMON];
+        
+        // Glowing aura around selected card
+        if (isSelected) {
+          const auraAlpha = selectionGlow * 0.4;
+          const auraSize = 15 + Math.sin(gameTime * 10) * 5; // Pulsing aura
+          ctx.shadowBlur = auraSize;
+          ctx.shadowColor = col.bg;
+          ctx.globalAlpha = auraAlpha * entranceAlpha;
           ctx.fillStyle = col.bg;
-          ctx.fillRect(0, 0, cardW, 8);
+          ctx.fillRect(-auraSize, -auraSize, cardW + auraSize * 2, cardH + auraSize * 2);
+          ctx.shadowBlur = 0;
+          ctx.globalAlpha = entranceAlpha;
+        }
 
-          ctx.fillStyle = "#e6e8ff";
-          ctx.font = "14px ui-sans-serif, system-ui";
-          ctx.textAlign = "left";
-          ctx.fillText(`${i + 1}. ${c.name}`, 12, 32);
+        // Rarity-colored border (thicker for higher rarity and when selected)
+        let borderWidth = (c.rarity === RARITY.LEGENDARY ? 4 : c.rarity === RARITY.RARE ? 3 : c.rarity === RARITY.UNCOMMON ? 2 : 1);
+        if (isSelected) {
+          borderWidth = borderWidth * 1.5 * borderPulse; // Much thicker when selected
+        } else {
+          borderWidth = borderWidth * borderPulse;
+        }
+        ctx.strokeStyle = col.bg;
+        ctx.lineWidth = borderWidth;
+        ctx.globalAlpha = selectionGlow * entranceAlpha;
+        
+        // Double border effect for selected cards
+        if (isSelected) {
+          ctx.shadowBlur = 10 * selectionGlow;
+          ctx.shadowColor = col.bg;
+        }
+        ctx.strokeRect(0, 0, cardW, cardH);
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = entranceAlpha; // Keep entrance alpha for all drawing
 
-          ctx.font = "12px ui-sans-serif, system-ui";
-          ctx.fillStyle = "rgba(230,232,255,0.85)";
-          ctx.fillText(`${c.type} • ${c.rarity}`, 12, 52);
+        // Top rarity bar
+        ctx.fillStyle = col.bg;
+        ctx.fillRect(0, 0, cardW, 8);
+
+        // Rarity glow effect
+        if (c.rarity === RARITY.LEGENDARY || c.rarity === RARITY.RARE) {
+          ctx.shadowBlur = 15 * selectionGlow * pulse;
+          ctx.shadowColor = col.bg;
+          ctx.fillStyle = `${col.bg}${Math.floor(selectionGlow * 0.3 * 255).toString(16).padStart(2, '0')}`;
+          ctx.fillRect(0, 0, cardW, cardH);
+          ctx.shadowBlur = 0;
+        }
+
+        ctx.fillStyle = "#e6e8ff";
+        ctx.font = "14px ui-sans-serif, system-ui";
+        ctx.textAlign = "left";
+        ctx.globalAlpha = entranceAlpha; // Apply entrance alpha to text
+        ctx.fillText(`${i + 1}. ${c.name}`, 12, 32);
+
+        ctx.font = "12px ui-sans-serif, system-ui";
+        ctx.fillStyle = col.bg;
+        ctx.fillText(`${c.type} • ${c.rarity}`, 12, 52);
 
           // Show description first
           if (c.desc) {
@@ -7614,23 +8594,71 @@ export default function NeonPitRoguelikeV3() {
             }
           }
 
-          ctx.fillStyle = "rgba(230,232,255,0.7)";
-          ctx.fillText("Click to pick", 12, cardH - 12);
+          // Enhanced selection indicator with pulsing effect
+          if (isSelected) {
+            const indicatorPulse = Math.sin(gameTime * 15) * 0.3 + 0.7;
+            ctx.fillStyle = col.bg;
+            ctx.font = `bold 12px ui-sans-serif, system-ui`;
+            ctx.globalAlpha = indicatorPulse * entranceAlpha;
+            ctx.shadowBlur = 8 * selectionGlow;
+            ctx.shadowColor = col.bg;
+            ctx.fillText("► SELECTED ◄", 12, cardH - 12);
+            ctx.shadowBlur = 0;
+            ctx.font = "12px ui-sans-serif, system-ui"; // Reset font
+            ctx.globalAlpha = entranceAlpha;
+          } else {
+            ctx.fillStyle = "rgba(230,232,255,0.5)";
+            ctx.fillText("Click to pick", 12, cardH - 12);
+          }
 
-          ctx.fillStyle = "rgba(230,232,255,0.95)";
-          ctx.strokeStyle = "rgba(230,232,255,0.14)";
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(cardW - 26, 28, 12, 0, Math.PI * 2);
-          ctx.stroke();
+          // Icon with rarity glow
           ctx.save();
           ctx.translate(cardW - 26, 28);
+          if (c.rarity === RARITY.LEGENDARY || c.rarity === RARITY.RARE) {
+            ctx.shadowBlur = 8 * selectionGlow;
+            ctx.shadowColor = col.bg;
+          }
+          ctx.fillStyle = "rgba(230,232,255,0.95)";
+          ctx.strokeStyle = col.bg;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(0, 0, 12, 0, Math.PI * 2);
+          ctx.stroke();
           const iconSize = 8;
           if (typeof c.icon === "function") c.icon(ctx, 0, 0, iconSize);
+          ctx.shadowBlur = 0;
           ctx.restore();
+          
+          // Enhanced particles for selected card - all rarities get particles
+          if (isSelected && s) {
+            const particleCount = c.rarity === RARITY.LEGENDARY ? 8 : c.rarity === RARITY.RARE ? 6 : c.rarity === RARITY.UNCOMMON ? 4 : 3;
+            const baseDist = c.rarity === RARITY.LEGENDARY ? 40 : c.rarity === RARITY.RARE ? 35 : 30;
+            for (let p = 0; p < particleCount; p++) {
+              const angle = (Math.PI * 2 * p) / particleCount + gameTime * 3; // Faster rotation
+              const dist = baseDist + Math.sin(gameTime * 6 + p) * 12; // More dynamic movement
+              const px = cardW / 2 + Math.cos(angle) * dist;
+              const py = cardH / 2 + Math.sin(angle) * dist;
+              const particleSize = 2 + Math.sin(gameTime * 8 + p) * 1.5; // Pulsing particles
+              ctx.fillStyle = col.bg;
+              ctx.globalAlpha = (selectionGlow * 0.8 + 0.2) * entranceAlpha;
+              ctx.beginPath();
+              ctx.arc(px, py, particleSize, 0, Math.PI * 2);
+              ctx.fill();
+              
+              // Outer glow for particles
+              ctx.shadowBlur = 6;
+              ctx.shadowColor = col.bg;
+              ctx.beginPath();
+              ctx.arc(px, py, particleSize * 0.5, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.shadowBlur = 0;
+            }
+            ctx.globalAlpha = entranceAlpha;
+          }
         }
 
-        ctx.restore();
+        ctx.globalAlpha = 1.0; // Reset alpha after card
+        ctx.restore(); // Restore card transform
       }
 
       ctx.restore();
@@ -7663,8 +8691,37 @@ export default function NeonPitRoguelikeV3() {
       ctx.textAlign = "center";
       ctx.fillText("Neon Pit", w * 0.5, 86);
 
+      // Latest Updates section (left side)
+      const updatesX = 20;
+      const updatesY = 120;
+      const updatesW = Math.min(320, w * 0.32);
+      const updatesH = 140;
+      
+      // Background for updates panel
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(updatesX, updatesY, updatesW, updatesH);
+      ctx.strokeStyle = "rgba(46,168,255,0.4)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(updatesX, updatesY, updatesW, updatesH);
+      
+      // Updates title
+      ctx.fillStyle = "#2ea8ff";
+      ctx.font = "bold 14px ui-sans-serif, system-ui";
+      ctx.textAlign = "left";
+      ctx.fillText("📋 Latest Updates", updatesX + 10, updatesY + 22);
+      
+      // Updates content
+      ctx.font = "11px ui-sans-serif, system-ui";
+      ctx.fillStyle = "rgba(230,232,255,0.9)";
+      let updateY = updatesY + 42;
+      for (const update of LATEST_UPDATES) {
+        ctx.fillText(update, updatesX + 12, updateY);
+        updateY += 18;
+      }
+
       ctx.font = "13px ui-sans-serif, system-ui";
       ctx.fillStyle = "rgba(230,232,255,0.85)";
+      ctx.textAlign = "center";
       ctx.fillText("WASD move", w * 0.5, 118);
       ctx.fillText("Space jump | Shift ability", w * 0.5, 140);
       ctx.fillText("E interact", w * 0.5, 162);
@@ -7720,6 +8777,77 @@ export default function NeonPitRoguelikeV3() {
         ctx.font = "12px ui-sans-serif, system-ui";
         ctx.fillText(`Best ${format(u.best)}`, w * 0.5, h - 54);
       }
+      
+      // Mute button
+      const muteButtonX = w - 140;
+      const muteButtonY = 20;
+      const muteButtonW = 120;
+      const muteButtonH = 35;
+      const isMuted = u.muted;
+      
+      ctx.fillStyle = isMuted ? "rgba(200,60,60,0.8)" : "rgba(40,60,80,0.9)";
+      ctx.fillRect(muteButtonX, muteButtonY, muteButtonW, muteButtonH);
+      ctx.strokeStyle = isMuted ? "#ff5d5d" : "#2ea8ff";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(muteButtonX, muteButtonY, muteButtonW, muteButtonH);
+      ctx.fillStyle = isMuted ? "#ff5d5d" : "#2ea8ff";
+      ctx.font = "14px ui-sans-serif, system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText(isMuted ? "🔇 Muted (M)" : "🔊 Sound (M)", muteButtonX + muteButtonW / 2, muteButtonY + 24);
+      
+      // Music volume control
+      const volumeY = muteButtonY + muteButtonH + 10;
+      const volumeW = 120;
+      const volumeH = 20;
+      const volumeBarW = 100;
+      const volumeBarH = 6;
+      const volumeBarX = muteButtonX + (muteButtonW - volumeBarW) / 2;
+      const volumeBarY = volumeY + (volumeH - volumeBarH) / 2;
+      const musicVolume = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+      
+      // Volume label
+      ctx.fillStyle = "rgba(230,232,255,0.9)";
+      ctx.font = "11px ui-sans-serif, system-ui";
+      ctx.textAlign = "left";
+      ctx.fillText("Volume", muteButtonX, volumeY - 2);
+      
+      // Volume bar background
+      ctx.fillStyle = "rgba(40,60,80,0.9)";
+      ctx.fillRect(volumeBarX, volumeBarY, volumeBarW, volumeBarH);
+      ctx.strokeStyle = "#2ea8ff";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(volumeBarX, volumeBarY, volumeBarW, volumeBarH);
+      
+      // Volume bar fill
+      ctx.fillStyle = "#2ea8ff";
+      ctx.fillRect(volumeBarX, volumeBarY, volumeBarW * musicVolume, volumeBarH);
+      
+      // Volume buttons
+      const volButtonSize = 18;
+      const volButtonY = volumeY;
+      const volMinusX = volumeBarX - volButtonSize - 4;
+      const volPlusX = volumeBarX + volumeBarW + 4;
+      
+      // Minus button
+      ctx.fillStyle = "rgba(40,60,80,0.9)";
+      ctx.fillRect(volMinusX, volButtonY, volButtonSize, volButtonSize);
+      ctx.strokeStyle = "#2ea8ff";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(volMinusX, volButtonY, volButtonSize, volButtonSize);
+      ctx.fillStyle = "#2ea8ff";
+      ctx.font = "12px ui-sans-serif, system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("-", volMinusX + volButtonSize / 2, volButtonY + 14);
+      
+      // Plus button
+      ctx.fillStyle = "rgba(40,60,80,0.9)";
+      ctx.fillRect(volPlusX, volButtonY, volButtonSize, volButtonSize);
+      ctx.strokeStyle = "#2ea8ff";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(volPlusX, volButtonY, volButtonSize, volButtonSize);
+      ctx.fillStyle = "#2ea8ff";
+      ctx.fillText("+", volPlusX + volButtonSize / 2, volButtonY + 14);
+      
       ctx.restore();
       return;
     }
@@ -7839,9 +8967,10 @@ export default function NeonPitRoguelikeV3() {
 
     c.apply();
     
-    // Show popup text for the upgrade
+    // Show popup text for the upgrade with rarity color
     const p = s.player;
-    pushCombatText(s, p.x, p.y - 30, c.name.toUpperCase(), "#9cffd6", { size: 18, life: 1.5 });
+    const col = RARITY_COLOR[c.rarity] || RARITY_COLOR[RARITY.COMMON];
+    pushCombatText(s, p.x, p.y - 30, c.name.toUpperCase(), col.bg, { size: 18, life: 1.5 });
 
     s.running = true;
     s.freezeMode = null;
@@ -7857,6 +8986,9 @@ export default function NeonPitRoguelikeV3() {
       timer: s.stageLeft,
       hint: "",
       levelChoices: [],
+      selectedChoiceIndex: 0,
+      levelUpFanfareT: 0,
+      chestOpenFanfareT: 0,
     };
 
     uiRef.current = nextUi;
@@ -7916,6 +9048,49 @@ export default function NeonPitRoguelikeV3() {
       const keyCode = e.keyCode || e.which;
       const keyLower = k ? k.toLowerCase() : "";
 
+      // M key to toggle mute (handle early, works everywhere)
+      if (k === "m" || k === "M" || keyLower === "m") {
+        e.preventDefault();
+        e.stopPropagation();
+        ensureAudio(); // Make sure audio is initialized
+        const u = uiRef.current;
+        const nextMuted = !u.muted;
+        const nextUi = { ...u, muted: nextMuted };
+        uiRef.current = nextUi;
+        setUi(nextUi);
+        applyAudioToggles(nextUi);
+        return;
+      }
+
+      // Volume controls: [ and ] keys
+      if (k === "[" || k === "{" || keyCode === 219) {
+        e.preventDefault();
+        e.stopPropagation();
+        ensureAudio();
+        const u = uiRef.current;
+        const currentVol = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+        const newVol = Math.max(0, currentVol - 0.1);
+        const nextUi = { ...u, musicVolume: newVol };
+        uiRef.current = nextUi;
+        setUi(nextUi);
+        updateMusicVolume();
+        return;
+      }
+
+      if (k === "]" || k === "}" || keyCode === 221) {
+        e.preventDefault();
+        e.stopPropagation();
+        ensureAudio();
+        const u = uiRef.current;
+        const currentVol = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+        const newVol = Math.min(1, currentVol + 0.1);
+        const nextUi = { ...u, musicVolume: newVol };
+        uiRef.current = nextUi;
+        setUi(nextUi);
+        updateMusicVolume();
+        return;
+      }
+
       if (k === "Tab") {
         e.preventDefault();
         e.stopPropagation();
@@ -7933,8 +9108,37 @@ export default function NeonPitRoguelikeV3() {
         return;
       }
 
+      // Keyboard controls for upgrade selection
+      const u = uiRef.current;
+      if (u.screen === "levelup") {
+        // A/D or Left/Right arrow to scroll through choices
+        if ((k === "a" || k === "A" || k === "ArrowLeft") && u.selectedChoiceIndex > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          const nextUi = { ...u, selectedChoiceIndex: u.selectedChoiceIndex - 1 };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          return;
+        }
+        if ((k === "d" || k === "D" || k === "ArrowRight") && u.selectedChoiceIndex < 2) {
+          e.preventDefault();
+          e.stopPropagation();
+          const nextUi = { ...u, selectedChoiceIndex: u.selectedChoiceIndex + 1 };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          return;
+        }
+        
+        // E or Enter to select
+        if (k === "e" || k === "E" || k === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          pickChoice(u.selectedChoiceIndex || 0);
+          return;
+        }
+      }
+
       if (k === "1" || k === "2" || k === "3") {
-        const u = uiRef.current;
         if (u.screen === "menu") {
           const id = content.characters[Number(k) - 1]?.id;
           if (id) setMenuChar(id);
@@ -7947,13 +9151,13 @@ export default function NeonPitRoguelikeV3() {
         e.preventDefault();
         e.stopPropagation();
         const s = stateRef.current;
-        const u = uiRef.current;
+        const u2 = uiRef.current;
         
         // Check menu screen first
-        if (u.screen === "menu") {
+        if (u2.screen === "menu") {
           ensureAudio();
           const best = safeBest();
-          newRun(best, u.selectedChar);
+          newRun(best, u2.selectedChar);
           return;
         }
         
@@ -8307,6 +9511,54 @@ export default function NeonPitRoguelikeV3() {
           return;
         }
         
+        // Mute button
+        if (x >= buttonX && x <= buttonX + buttonW && y >= buttonY + buttonSpacing * 3 && y <= buttonY + buttonSpacing * 3 + buttonH) {
+          e.preventDefault();
+          e.stopPropagation();
+          ensureAudio(); // Make sure audio is initialized
+          const nextMuted = !u.muted;
+          const nextUi = { ...u, muted: nextMuted };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          applyAudioToggles(nextUi);
+          return;
+        }
+        
+        // Volume controls
+        const volumeButtonY = buttonY + buttonSpacing * 4;
+        const volumeBarW = 200;
+        const volumeBarX = w * 0.5 - volumeBarW / 2;
+        const volButtonSize = 24;
+        const volMinusX = volumeBarX - volButtonSize - 8;
+        const volPlusX = volumeBarX + volumeBarW + 8;
+        const volButtonY = volumeButtonY + 10;
+        
+        // Volume minus button
+        if (x >= volMinusX && x <= volMinusX + volButtonSize && y >= volButtonY && y <= volButtonY + volButtonSize) {
+          e.preventDefault();
+          e.stopPropagation();
+          const currentVol = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+          const newVol = Math.max(0, currentVol - 0.1);
+          const nextUi = { ...u, musicVolume: newVol };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          updateMusicVolume();
+          return;
+        }
+        
+        // Volume plus button
+        if (x >= volPlusX && x <= volPlusX + volButtonSize && y >= volButtonY && y <= volButtonY + volButtonSize) {
+          e.preventDefault();
+          e.stopPropagation();
+          const currentVol = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+          const newVol = Math.min(1, currentVol + 0.1);
+          const nextUi = { ...u, musicVolume: newVol };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          updateMusicVolume();
+          return;
+        }
+        
         // If we're in pause menu, don't process other clicks
         return;
       }
@@ -8321,6 +9573,58 @@ export default function NeonPitRoguelikeV3() {
           const rect = c.getBoundingClientRect();
           const x = e.clientX - rect.left;
           const y = e.clientY - rect.top;
+
+          // Check mute button click
+          const muteButtonX = sizeRef.current.w - 140;
+          const muteButtonY = 20;
+          const muteButtonW = 120;
+          const muteButtonH = 35;
+          if (x >= muteButtonX && x <= muteButtonX + muteButtonW && y >= muteButtonY && y <= muteButtonY + muteButtonH) {
+            e.preventDefault();
+            e.stopPropagation();
+            ensureAudio(); // Make sure audio is initialized
+            const nextMuted = !u.muted;
+            const nextUi = { ...u, muted: nextMuted };
+            uiRef.current = nextUi;
+            setUi(nextUi);
+            applyAudioToggles(nextUi);
+            return;
+          }
+          
+          // Volume controls in menu
+          const volumeY = muteButtonY + muteButtonH + 10;
+          const volumeBarW = 100;
+          const volumeBarX = muteButtonX + (muteButtonW - volumeBarW) / 2;
+          const volButtonSize = 18;
+          const volMinusX = volumeBarX - volButtonSize - 4;
+          const volPlusX = volumeBarX + volumeBarW + 4;
+          const volButtonY = volumeY;
+          
+          // Volume minus button
+          if (x >= volMinusX && x <= volMinusX + volButtonSize && y >= volButtonY && y <= volButtonY + volButtonSize) {
+            e.preventDefault();
+            e.stopPropagation();
+            const currentVol = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+            const newVol = Math.max(0, currentVol - 0.1);
+            const nextUi = { ...u, musicVolume: newVol };
+            uiRef.current = nextUi;
+            setUi(nextUi);
+            updateMusicVolume();
+            return;
+          }
+          
+          // Volume plus button
+          if (x >= volPlusX && x <= volPlusX + volButtonSize && y >= volButtonY && y <= volButtonY + volButtonSize) {
+            e.preventDefault();
+            e.stopPropagation();
+            const currentVol = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+            const newVol = Math.min(1, currentVol + 0.1);
+            const nextUi = { ...u, musicVolume: newVol };
+            uiRef.current = nextUi;
+            setUi(nextUi);
+            updateMusicVolume();
+            return;
+          }
 
           const cardW = Math.min(300, Math.max(220, sizeRef.current.w * 0.24));
           const gap = 18;
@@ -8348,16 +9652,35 @@ export default function NeonPitRoguelikeV3() {
         const h = s.arena.h;
 
         const cardW = Math.min(320, Math.max(240, w * 0.26));
-        const cardH = 130;
+        const cardH = 180;
         const gap = 18;
-        const totalW = cardW * 3 + gap * 2;
-        const startX = w * 0.5 - totalW * 0.5;
+        
+        // Account for max scale (1.05x) when calculating spacing
+        const maxScaledW = cardW * 1.05;
+        const spacing = maxScaledW + gap; // Space between card centers
+        
+        // Center the group of 3 cards
+        const screenCenterX = w * 0.5;
+        const leftCardCenterX = screenCenterX - spacing;
+        const centerCardCenterX = screenCenterX;
+        const rightCardCenterX = screenCenterX + spacing;
+        
+        const cardCenters = [leftCardCenterX, centerCardCenterX, rightCardCenterX];
         const topY = h * 0.5 - cardH * 0.5;
 
         for (let i = 0; i < 3; i++) {
-          const cx = startX + i * (cardW + gap);
-          // Fix click detection - account for card height properly
-          if (x >= cx && x <= cx + cardW && y >= topY && y <= topY + cardH) {
+          const cardCenterX = cardCenters[i];
+          // Account for scaling - check if click is within card bounds
+          // Cards can scale up to 1.05x, so expand hitbox slightly
+          const scaledW = cardW * 1.05;
+          const scaledH = cardH * 1.05;
+          const cardCenterY = topY + cardH / 2;
+          const hitboxLeft = cardCenterX - scaledW / 2;
+          const hitboxRight = cardCenterX + scaledW / 2;
+          const hitboxTop = cardCenterY - scaledH / 2;
+          const hitboxBottom = cardCenterY + scaledH / 2;
+          
+          if (x >= hitboxLeft && x <= hitboxRight && y >= hitboxTop && y <= hitboxBottom) {
             e.preventDefault();
             e.stopPropagation();
             pickChoice(i);
@@ -8396,8 +9719,25 @@ export default function NeonPitRoguelikeV3() {
       step._last = now;
       const dt = clamp((now - last) / 1000, 0, 0.05);
 
+      // Update music system
+      updateMusic(dt);
+
+      // Update fanfare timers
+      const u = uiRef.current;
+      if (u.screen === "levelup") {
+        if (u.levelUpFanfareT > 0) {
+          const nextUi = { ...u, levelUpFanfareT: Math.max(0, u.levelUpFanfareT - dt) };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+        }
+        if (u.chestOpenFanfareT > 0) {
+          const nextUi = { ...u, chestOpenFanfareT: Math.max(0, u.chestOpenFanfareT - dt) };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+        }
+      }
+
       if (s) {
-        const u = uiRef.current;
         if (u.screen === "running" && s.running && !u.pauseMenu) {
           // Always update hitStopT, but only update game logic when hitStopT is 0
           if (s.hitStopT > 0) {
@@ -8461,6 +9801,16 @@ export default function NeonPitRoguelikeV3() {
     rafRef.current = requestAnimationFrame(step);
     return () => {
       cancelAnimationFrame(rafRef.current);
+      // Cleanup audio
+      const a = audioRef.current;
+      if (a.menuMusic) {
+        a.menuMusic.pause();
+        a.menuMusic = null;
+      }
+      if (a.battleMusic) {
+        a.battleMusic.pause();
+        a.battleMusic = null;
+      }
     };
   }, []);
 
