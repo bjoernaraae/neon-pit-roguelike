@@ -66,7 +66,58 @@ Run unit tests:
 npm test
 ```
 
-## Project Structure
+## 🎮 Controls
+
+### Movement
+- **WASD** or **Arrow Keys** - Move your character
+- **Space** - Jump (character-specific ability)
+- **Shift** - Activate special ability (character-specific)
+
+### Menu & Navigation
+- **E** or **Enter** - Interact with objects, select options, start game
+- **A/D** or **Left/Right Arrows** - Navigate through upgrade choices
+- **1, 2, 3** - Quick select upgrade options
+- **Tab** - Toggle stats display
+- **Escape** - Pause menu / Close menus
+
+### Audio & Display
+- **M** - Toggle mute/unmute
+- **[** - Decrease volume
+- **]** - Increase volume
+- **F** - Toggle fullscreen
+
+## 💡 Tips & Tricks
+
+### Combat
+- **Keep moving!** Standing still makes you an easy target
+- **Use your environment** - Corridors and rooms offer different tactical advantages
+- **Watch for visual cues** - Danger zones appear before attacks
+- **Positioning matters** - Some areas are safer than others during combat
+
+### Upgrades & Progression
+- **Choose wisely** - Each upgrade choice shapes your build
+- **Balance is key** - Consider both offense and defense
+- **Experiment** - Different combinations create unique playstyles
+- **Plan ahead** - Some upgrades synergize better than others
+
+### Resource Management
+- **Prioritize** - Not all resources are equally valuable
+- **Timing** - Sometimes it's better to save than spend immediately
+- **Explore** - Hidden opportunities await in every level
+
+### Survival
+- **Learn patterns** - Enemies and bosses have predictable behaviors
+- **Stay aware** - Keep an eye on your surroundings
+- **Don't panic** - Take a moment to assess the situation
+- **Practice makes perfect** - Each run teaches you something new
+
+### General
+- **Try different characters** - Each has unique abilities and playstyles
+- **Read the visuals** - The game communicates important information through colors and effects
+- **Take breaks** - Sometimes stepping away helps you see new strategies
+- **Have fun!** - Experiment and find what works for you
+
+## 📁 Project Structure
 
 ```
 src/
