@@ -38,7 +38,7 @@ const resolveDynamicCircleOverlap = resolveDynamicOverlap;
 
 import { ISO_MODE } from "../data/constants.js";
 import { worldToIso, isoToWorld, getIsoDepth, transformInputForIsometric, drawIsometricCube, drawEntityAsCube, drawIsometricRectangle } from "../rendering/IsometricRenderer.js";
-import { BossController, ConeAttackAbility, LineDashAbility, RingPulseAbility, BOSS_ABILITY_STATE, DANGER_ZONE_TYPE } from "../game/systems/BossAbilitySystem.js";
+import { BossController, ConeAttackAbility, LineDashAbility, RingPulseAbility, TeleportAbility, ChargeAbility, MultiShotAbility, BOSS_ABILITY_STATE, DANGER_ZONE_TYPE } from "../game/systems/BossAbilitySystem.js";
 
 
 
@@ -2151,14 +2151,14 @@ export default function NeonPitRoguelikeV3() {
     if (!dangerZones || dangerZones.length === 0) return;
     
     const { w, h } = s.arena;
-    const pulse = Math.sin(s.t * 10) * 0.15 + 0.85; // Pulsing effect
+    const pulse = Math.sin(s.t * 10) * 0.2 + 0.8; // Stronger pulsing effect
     
     for (const zone of dangerZones) {
       const alpha = zone.alpha * (zone.pulse ? pulse : 1.0);
       ctx.globalAlpha = alpha;
       ctx.strokeStyle = zone.color;
       ctx.fillStyle = zone.color;
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 5; // Thicker default line width
       
       if (zone.type === DANGER_ZONE_TYPE.CONE) {
         // Draw cone attack zone
@@ -2184,11 +2184,23 @@ export default function NeonPitRoguelikeV3() {
         ctx.closePath();
         ctx.fill();
         
-        // Outer edge highlight
-        ctx.globalAlpha = alpha * 1.5;
-        ctx.lineWidth = 4;
+        // Outer edge highlight - much thicker and brighter
+        ctx.globalAlpha = Math.min(alpha * 1.8, 1.0);
+        ctx.lineWidth = 8;
+        ctx.strokeStyle = zone.state === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,255,0,1.0)' : 'rgba(255,0,0,1.0)';
         ctx.beginPath();
         ctx.arc(centerX, centerY, range, startAngle, endAngle);
+        ctx.stroke();
+        
+        // Additional inner edge for clarity
+        ctx.globalAlpha = Math.min(alpha * 1.3, 1.0);
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = zone.color;
+        ctx.beginPath();
+        ctx.moveTo(centerX, centerY);
+        ctx.lineTo(centerX + Math.cos(startAngle) * range, centerY + Math.sin(startAngle) * range);
+        ctx.moveTo(centerX, centerY);
+        ctx.lineTo(centerX + Math.cos(endAngle) * range, centerY + Math.sin(endAngle) * range);
         ctx.stroke();
         
       } else if (zone.type === DANGER_ZONE_TYPE.LINE_DASH) {
@@ -2230,9 +2242,21 @@ export default function NeonPitRoguelikeV3() {
         ctx.closePath();
         ctx.fill();
         
-        // Edge highlight
-        ctx.globalAlpha = alpha * 1.5;
-        ctx.lineWidth = 4;
+        // Edge highlight - much thicker and brighter
+        ctx.globalAlpha = Math.min(alpha * 1.8, 1.0);
+        ctx.lineWidth = 8;
+        ctx.strokeStyle = zone.state === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,255,0,1.0)' : 'rgba(255,0,0,1.0)';
+        ctx.stroke();
+        
+        // Additional corner highlights for clarity
+        ctx.globalAlpha = Math.min(alpha * 1.3, 1.0);
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = zone.color;
+        ctx.beginPath();
+        ctx.arc(startX, startY, width / 2, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(endX, endY, width / 2, 0, Math.PI * 2);
         ctx.stroke();
         
       } else if (zone.type === DANGER_ZONE_TYPE.RING_PULSE) {
@@ -2253,25 +2277,179 @@ export default function NeonPitRoguelikeV3() {
         
         // Safety check: ensure outer radius is always larger than inner
         if (outerR <= innerR) {
-          outerR = innerR + 10; // Minimum visible ring width
+          outerR = innerR + 20; // Minimum visible ring width
+        }
+        
+        // Draw safe zone indicator (center is safe) if flag is set
+        if (zone.showSafeZone && innerR > 0) {
+          ctx.globalAlpha = 0.4;
+          ctx.fillStyle = 'rgba(0,255,0,0.5)';
+          ctx.beginPath();
+          ctx.arc(centerX, centerY, innerR, 0, Math.PI * 2);
+          ctx.fill();
+          
+          // Safe zone border
+          ctx.globalAlpha = 0.8;
+          ctx.strokeStyle = 'rgba(0,255,0,1.0)';
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.arc(centerX, centerY, innerR, 0, Math.PI * 2);
+          ctx.stroke();
         }
         
         // Draw donut (outer circle minus inner circle)
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = zone.color;
         ctx.beginPath();
         ctx.arc(centerX, centerY, outerR, 0, Math.PI * 2);
         ctx.arc(centerX, centerY, innerR, 0, Math.PI * 2, true); // Counter-clockwise for hole
         ctx.fill();
         
-        // Edge highlights with better visibility
-        ctx.globalAlpha = Math.min(alpha * 1.2, 1.0); // Cap at 1.0
-        ctx.lineWidth = 5;
-        ctx.strokeStyle = zone.color;
+        // Edge highlights - much thicker and brighter
+        ctx.globalAlpha = Math.min(alpha * 1.8, 1.0);
+        ctx.lineWidth = 8;
+        ctx.strokeStyle = zone.state === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,255,0,1.0)' : 'rgba(255,0,0,1.0)';
         ctx.beginPath();
         ctx.arc(centerX, centerY, outerR, 0, Math.PI * 2);
         ctx.stroke();
+        
+        // Inner edge highlight
+        if (innerR > 0) {
+          ctx.globalAlpha = Math.min(alpha * 1.5, 1.0);
+          ctx.lineWidth = 6;
+          ctx.strokeStyle = zone.color;
         ctx.beginPath();
         ctx.arc(centerX, centerY, innerR, 0, Math.PI * 2);
         ctx.stroke();
+        }
+      } else if (zone.type === DANGER_ZONE_TYPE.TELEPORT) {
+        // Draw teleport destination
+        const centerX = ISO_MODE ? (() => {
+          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return w / 2 + zoneIso.x - camIso.x;
+        })() : zone.x;
+        const centerY = ISO_MODE ? (() => {
+          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return h / 2 + zoneIso.y - camIso.y;
+        })() : zone.y;
+        
+        const radius = ISO_MODE ? zone.radius * isoScale * 0.5 : zone.radius;
+        
+        // Draw pulsing circle
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Outer glow
+        ctx.globalAlpha = Math.min(alpha * 1.5, 1.0);
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = 'rgba(150,50,255,1.0)';
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        // Inner bright ring
+        ctx.globalAlpha = 1.0;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(200,100,255,1.0)';
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius * 0.6, 0, Math.PI * 2);
+        ctx.stroke();
+        
+      } else if (zone.type === DANGER_ZONE_TYPE.CHARGE) {
+        // Draw charge zone (similar to line dash but wider)
+        const startX = ISO_MODE ? (() => {
+          const startIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return w / 2 + startIso.x - camIso.x;
+        })() : zone.x;
+        const startY = ISO_MODE ? (() => {
+          const startIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return h / 2 + startIso.y - camIso.y;
+        })() : zone.y;
+        const endX = ISO_MODE ? (() => {
+          const endIso = worldToIso(zone.targetX, zone.targetY, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return w / 2 + endIso.x - camIso.x;
+        })() : zone.targetX;
+        const endY = ISO_MODE ? (() => {
+          const endIso = worldToIso(zone.targetX, zone.targetY, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return h / 2 + endIso.y - camIso.y;
+        })() : zone.targetY;
+        
+        const width = ISO_MODE ? zone.width * isoScale * 0.5 : zone.width;
+        const dx = endX - startX;
+        const dy = endY - startY;
+        const dist = Math.hypot(dx, dy);
+        const perpX = -dy / dist;
+        const perpY = dx / dist;
+        
+        // Draw rectangle
+        ctx.beginPath();
+        ctx.moveTo(startX + perpX * width / 2, startY + perpY * width / 2);
+        ctx.lineTo(startX - perpX * width / 2, startY - perpY * width / 2);
+        ctx.lineTo(endX - perpX * width / 2, endY - perpY * width / 2);
+        ctx.lineTo(endX + perpX * width / 2, endY + perpY * width / 2);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Edge highlight
+        ctx.globalAlpha = Math.min(alpha * 1.8, 1.0);
+        ctx.lineWidth = 8;
+        ctx.strokeStyle = zone.state === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,200,0,1.0)' : 'rgba(255,0,0,1.0)';
+        ctx.stroke();
+        
+        // Corner highlights
+        ctx.globalAlpha = Math.min(alpha * 1.3, 1.0);
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = zone.color;
+        ctx.beginPath();
+        ctx.arc(startX, startY, width / 2, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(endX, endY, width / 2, 0, Math.PI * 2);
+        ctx.stroke();
+        
+      } else if (zone.type === DANGER_ZONE_TYPE.MULTI_SHOT) {
+        // Draw multi-shot beam
+        const centerX = ISO_MODE ? (() => {
+          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return w / 2 + zoneIso.x - camIso.x;
+        })() : zone.x;
+        const centerY = ISO_MODE ? (() => {
+          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
+          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
+          return h / 2 + zoneIso.y - camIso.y;
+        })() : zone.y;
+        
+        const range = ISO_MODE ? zone.range * isoScale * 0.5 : zone.range;
+        const beamWidth = ISO_MODE ? zone.width * isoScale * 0.5 : zone.width;
+        
+        // Draw beam as a narrow rectangle
+        const endX = centerX + Math.cos(zone.angle) * range;
+        const endY = centerY + Math.sin(zone.angle) * range;
+        const perpX = -Math.sin(zone.angle);
+        const perpY = Math.cos(zone.angle);
+        
+        ctx.beginPath();
+        ctx.moveTo(centerX + perpX * beamWidth / 2, centerY + perpY * beamWidth / 2);
+        ctx.lineTo(centerX - perpX * beamWidth / 2, centerY - perpY * beamWidth / 2);
+        ctx.lineTo(endX - perpX * beamWidth / 2, endY - perpY * beamWidth / 2);
+        ctx.lineTo(endX + perpX * beamWidth / 2, endY + perpY * beamWidth / 2);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Edge highlight
+        ctx.globalAlpha = Math.min(alpha * 1.5, 1.0);
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = zone.state === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,200,100,1.0)' : 'rgba(255,100,100,1.0)';
+        ctx.stroke();
+        
       } else if (zone.type === 'burning_ground') {
         // Draw burning ground from phase 2 effects
         const centerX = ISO_MODE ? (() => {
@@ -3343,8 +3521,9 @@ export default function NeonPitRoguelikeV3() {
     const { w, padding } = s.arena;
     s.boss.active = true;
     s.boss.r = 38;
-    // Increased boss HP significantly for better balance
-    s.boss.maxHp = Math.round(1400 + s.floor * 380); // Increased from 980+240 to 1400+380
+    // Boss HP scales with floor - F1 is easier
+    // F1: 1000 HP, then +300 per floor (scaled down from previous)
+    s.boss.maxHp = Math.round(1000 + (s.floor - 1) * 300);
     s.boss.hp = s.boss.maxHp;
     // Spawn boss at teleporter location if provided, otherwise center
     // Ensure boss doesn't spawn on top of player
@@ -3371,13 +3550,62 @@ export default function NeonPitRoguelikeV3() {
     s.boss.angle = 0; // Initialize angle for rotation
     s.boss.enraged = false;
 
-    // Initialize boss controller with abilities
+    // Initialize boss controller with abilities - scale by floor
+    // F1 boss is easier (fewer abilities, longer cooldowns, less damage)
+    // Higher floors get more abilities and harder difficulty
     try {
-      const abilities = [
-        new ConeAttackAbility({ cooldown: 4.0, phase2Effect: 'burning_ground' }),
-        new LineDashAbility({ cooldown: 5.0 }),
-        new RingPulseAbility({ cooldown: 6.0 })
-      ];
+      const floor = s.floor;
+      const abilities = [];
+      
+      // Base abilities (always available)
+      const baseCooldown = 4.0 + (floor - 1) * 0.3; // Slightly faster on higher floors
+      abilities.push(new ConeAttackAbility({ 
+        cooldown: baseCooldown * 1.2, 
+        range: 350 + floor * 10,
+        phase2Effect: 'burning_ground' 
+      }));
+      
+      // F1: Only basic abilities
+      if (floor >= 1) {
+        abilities.push(new LineDashAbility({ 
+          cooldown: baseCooldown * 1.5,
+          dashDistance: 250 + floor * 15
+        }));
+      }
+      
+      // F2+: Add Ring Pulse
+      if (floor >= 2) {
+        abilities.push(new RingPulseAbility({ 
+          cooldown: baseCooldown * 1.8,
+          maxRadius: 300 + floor * 15
+        }));
+      }
+      
+      // F3+: Add Charge
+      if (floor >= 3) {
+        abilities.push(new ChargeAbility({ 
+          cooldown: baseCooldown * 2.0,
+          chargeDistance: 350 + floor * 20
+        }));
+      }
+      
+      // F4+: Add Teleport
+      if (floor >= 4) {
+        abilities.push(new TeleportAbility({ 
+          cooldown: baseCooldown * 2.5,
+          teleportDistance: 200 + floor * 10
+        }));
+      }
+      
+      // F5+: Add Multi-Shot
+      if (floor >= 5) {
+        abilities.push(new MultiShotAbility({ 
+          cooldown: baseCooldown * 2.2,
+          shotCount: 5 + Math.floor((floor - 5) / 2), // More shots on higher floors
+          range: 400 + floor * 10
+        }));
+      }
+      
       s.boss.controller = new BossController(s.boss, abilities);
     } catch (error) {
       console.error('Error initializing boss controller:', error);
@@ -5935,7 +6163,7 @@ export default function NeonPitRoguelikeV3() {
       // Update boss controller (handles abilities and rotation)
       if (s.boss.controller) {
         try {
-          s.boss.controller.update(p, dt, s.floor);
+          s.boss.controller.update(p, dt, s.floor, s.levelData);
           
           // Check for ability hits
           const hitResult = s.boss.controller.checkHits(p, s.floor);
@@ -5998,9 +6226,13 @@ export default function NeonPitRoguelikeV3() {
         }
       }
 
-      // Boss movement (only when not in active ability state)
+      // Boss movement (only when not in active ability state that controls movement)
+      // Line Dash ability handles its own movement, so skip normal movement during it
+      const isDashing = s.boss.controller && s.boss.controller.currentAbility && 
+                        s.boss.controller.currentAbility instanceof LineDashAbility &&
+                        s.boss.controller.currentAbility.state === BOSS_ABILITY_STATE.ACTIVE;
       const currentState = s.boss.controller?.getCurrentState();
-      if (currentState !== BOSS_ABILITY_STATE.ACTIVE) {
+      if (currentState !== BOSS_ABILITY_STATE.ACTIVE || isDashing) {
         const dx = p.x - s.boss.x;
         const dy = p.y - s.boss.y;
         const d = Math.hypot(dx, dy) || 1;
@@ -6011,16 +6243,27 @@ export default function NeonPitRoguelikeV3() {
         s.boss.enraged = enr;
         const bossSpeed = (84 + s.floor * 3.5) * (enr ? 1.2 : 1);
 
-        s.boss.x += ux * bossSpeed * dt;
-        s.boss.y += uy * bossSpeed * dt;
-        // Clamp boss to level bounds
-        if (s.levelData) {
-          s.boss.x = clamp(s.boss.x, padding, s.levelData.w - padding);
-          s.boss.y = clamp(s.boss.y, padding, s.levelData.h - padding);
+        let newX = s.boss.x + ux * bossSpeed * dt;
+        let newY = s.boss.y + uy * bossSpeed * dt;
+        
+        // Clamp boss to walkable areas (rooms/corridors)
+        if (s.levelData && s.boss.controller) {
+          const clamped = s.boss.controller.clampToWalkable(newX, newY, s.levelData);
+          newX = clamped.x;
+          newY = clamped.y;
         } else {
-          s.boss.x = clamp(s.boss.x, padding, w - padding);
-          s.boss.y = clamp(s.boss.y, padding, h - padding);
+          // Fallback to simple bounds
+          if (s.levelData) {
+            newX = clamp(newX, padding, s.levelData.w - padding);
+            newY = clamp(newY, padding, s.levelData.h - padding);
+          } else {
+            newX = clamp(newX, padding, w - padding);
+            newY = clamp(newY, padding, h - padding);
+          }
         }
+        
+        s.boss.x = newX;
+        s.boss.y = newY;
       }
 
       const bossBounds = s.levelData ? {
@@ -6874,7 +7117,7 @@ export default function NeonPitRoguelikeV3() {
 
     // Draw boss danger zones FIRST (before entities) so they appear on the ground
     if (s.boss.active && s.boss.controller) {
-      const dangerZones = s.boss.controller.getAllDangerZones(p);
+      const dangerZones = s.boss.controller.getAllDangerZones(p, s.levelData);
       drawDangerZones(s, ctx, cam, dangerZones, isoScaleRef.current);
     }
 
@@ -7104,6 +7347,34 @@ export default function NeonPitRoguelikeV3() {
             ctx.restore();
           }
           
+          // Draw boss visual feedback during attacks (windup/active states)
+          if (ent.entity.controller) {
+            const bossState = ent.entity.controller.getCurrentState();
+            if (bossState === BOSS_ABILITY_STATE.WINDUP || bossState === BOSS_ABILITY_STATE.ACTIVE) {
+              const pulse = Math.sin(s.t * 15) * 0.3 + 0.7;
+              const glowRadius = ent.entity.r * (1.3 + pulse * 0.2);
+              const glowColor = bossState === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,220,0,0.6)' : 'rgba(255,50,50,0.7)';
+              
+              // Outer glow
+              ctx.shadowBlur = 20;
+              ctx.shadowColor = bossState === BOSS_ABILITY_STATE.WINDUP ? '#ffdd00' : '#ff0000';
+              ctx.globalAlpha = pulse * 0.8;
+              ctx.fillStyle = glowColor;
+              ctx.beginPath();
+              ctx.arc(ent.screenX, ent.screenY, glowRadius, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.shadowBlur = 0;
+              
+              // Inner bright ring
+              ctx.globalAlpha = 1.0;
+              ctx.strokeStyle = bossState === BOSS_ABILITY_STATE.WINDUP ? '#ffdd00' : '#ff0000';
+              ctx.lineWidth = 4;
+              ctx.beginPath();
+              ctx.arc(ent.screenX, ent.screenY, ent.entity.r + 5, 0, Math.PI * 2);
+              ctx.stroke();
+            }
+          }
+          
           // Draw boss cube
           drawIsometricCube(ctx, ent.screenX, ent.screenY, ent.entity.r, ent.color, scale, entZ);
           
@@ -7123,7 +7394,7 @@ export default function NeonPitRoguelikeV3() {
     } else {
       // Top-down mode: draw danger zones first, then enemies and player
       if (s.boss.active && s.boss.controller) {
-        const dangerZones = s.boss.controller.getAllDangerZones(p);
+        const dangerZones = s.boss.controller.getAllDangerZones(p, s.levelData);
         drawDangerZones(s, ctx, cam, dangerZones, isoScaleRef.current);
       }
       
@@ -7289,6 +7560,34 @@ export default function NeonPitRoguelikeV3() {
           ctx.restore();
         }
         
+      // Draw boss visual feedback during attacks (windup/active states)
+      if (b.controller) {
+        const bossState = b.controller.getCurrentState();
+        if (bossState === BOSS_ABILITY_STATE.WINDUP || bossState === BOSS_ABILITY_STATE.ACTIVE) {
+          const pulse = Math.sin(s.t * 15) * 0.3 + 0.7;
+          const glowRadius = b.r * (1.3 + pulse * 0.2);
+          const glowColor = bossState === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,220,0,0.6)' : 'rgba(255,50,50,0.7)';
+          
+          // Outer glow
+          ctx.shadowBlur = 20;
+          ctx.shadowColor = bossState === BOSS_ABILITY_STATE.WINDUP ? '#ffdd00' : '#ff0000';
+          ctx.globalAlpha = pulse * 0.8;
+          ctx.fillStyle = glowColor;
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, glowRadius, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          
+          // Inner bright ring
+          ctx.globalAlpha = 1.0;
+          ctx.strokeStyle = bossState === BOSS_ABILITY_STATE.WINDUP ? '#ffdd00' : '#ff0000';
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, b.r + 5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+      
       ctx.globalAlpha = 1;
       ctx.fillStyle = b.enraged ? "#ff5d5d" : "#ffd44a";
       ctx.beginPath();
