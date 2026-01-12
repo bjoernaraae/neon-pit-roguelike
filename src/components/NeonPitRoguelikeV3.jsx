@@ -5780,7 +5780,9 @@ export default function NeonPitRoguelikeV3() {
         
         // Admin panel click handling
         if (u.showAdmin) {
+          console.log("Admin panel click:", x, y);
           handleAdminClick(x, y, w, h, u, content);
+          return; // CRITICAL: Return after handling admin click
         }
         
         return;
@@ -5799,6 +5801,60 @@ export default function NeonPitRoguelikeV3() {
         const y = e.clientY - rect.top;
         const w = rect.width;
         const h = rect.height;
+        
+        // Mute button (top right)
+        const muteButtonX = w - 140;
+        const muteButtonY = 20;
+        const muteButtonW = 120;
+        const muteButtonH = 35;
+        if (x >= muteButtonX && x <= muteButtonX + muteButtonW &&
+            y >= muteButtonY && y <= muteButtonY + muteButtonH) {
+          ensureAudio();
+          const nextMuted = !u.muted;
+          const nextUi = { ...u, muted: nextMuted };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          applyAudioToggles(nextUi);
+          console.log("Menu: Mute toggled to", nextMuted);
+          return;
+        }
+        
+        // Volume buttons (below mute button)
+        const volumeY = muteButtonY + muteButtonH + 10;
+        const volumeBarW = 100;
+        const volumeBarX = muteButtonX + (muteButtonW - volumeBarW) / 2;
+        const volButtonSize = 18;
+        const volMinusX = volumeBarX - volButtonSize - 3;
+        const volPlusX = volumeBarX + volumeBarW + 3;
+        const volButtonY = volumeY + 1;
+        
+        // Minus button
+        if (x >= volMinusX && x <= volMinusX + volButtonSize &&
+            y >= volButtonY && y <= volButtonY + volButtonSize) {
+          ensureAudio();
+          const currentVolume = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+          const newVolume = Math.max(0, currentVolume - 0.1);
+          const nextUi = { ...u, musicVolume: newVolume };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          updateMusicVolume();
+          console.log("Menu: Volume decreased to", newVolume);
+          return;
+        }
+        
+        // Plus button
+        if (x >= volPlusX && x <= volPlusX + volButtonSize &&
+            y >= volButtonY && y <= volButtonY + volButtonSize) {
+          ensureAudio();
+          const currentVolume = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+          const newVolume = Math.min(1, currentVolume + 0.1);
+          const nextUi = { ...u, musicVolume: newVolume };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          updateMusicVolume();
+          console.log("Menu: Volume increased to", newVolume);
+          return;
+        }
         
         // Character selection buttons
         const charButtonY = h * 0.5 + 40;
@@ -5946,6 +6002,10 @@ export default function NeonPitRoguelikeV3() {
       
       // Render-only path for non-running screens (menu, levelup, dead, pause)
       if (u.screen !== 'running' || u.pauseMenu) {
+        // CRITICAL: Update music even in render-only path (for menu music)
+        const dt = 0.016; // ~60fps frame time for menu music updates
+        updateMusic(dt);
+        
         // Clear and setup canvas
         ctx.clearRect(0, 0, w, h);
         
@@ -5972,6 +6032,7 @@ export default function NeonPitRoguelikeV3() {
           ctx.fillRect(0, 0, w, h);
           
           // 3. IMMEDIATELY draw upgrade cards in SCREEN COORDINATES (w/2, h/2)
+          console.log("Drawing levelup overlay - UI choices:", u.levelChoices?.length || 0);
           drawOverlay(s, ctx, u, content, isoScaleRef.current, s);
         } else if (!s || u.screen === 'menu' || u.screen === 'dead') {
           // Menu/dead screen - dark background then overlay
