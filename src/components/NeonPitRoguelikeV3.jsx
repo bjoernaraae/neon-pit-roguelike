@@ -8,6 +8,8 @@ import { isPointWalkable, findNearestWalkable, hasLineOfSight, circleOverlapsRec
 import { generateFlowField, getFlowDirection } from "../game/systems/PathfindingSystem.js";
 import { BSPNode, generateBSPDungeon, convertBSPToGrid, generateWallInfluenceMap } from "../game/world/BSPDungeonGenerator.js";
 import { generateProceduralLevel } from "../game/world/LevelGenerator.js";
+import { ENEMY_BASE_STATS, getEnemyTierWeights, ELITE_CONFIG, getRandomEliteAbility, getRandomEliteWeakness } from "../data/enemyData.js";
+import { createPlayerWithCharacter } from "../data/characterData.js";
 import menuMusicUrl from "../audio/music/Menu.mp3";
 import battleMusicUrl from "../audio/music/Battle.mp3";
 
