@@ -6089,7 +6089,11 @@ export default function NeonPitRoguelikeV3() {
       }
 
       const ctx = c.getContext("2d");
-      const { w, h } = sizeRef.current;
+      const { w, h, dpr } = sizeRef.current;
+      
+      // CRITICAL: Scale context to match DPR (device pixel ratio)
+      // Without this, rendering coordinates don't match canvas size
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       
       // HARD FREEZE ON MENUS: Prevent camera and game logic from running when menus are open
       const u = uiRef.current;
