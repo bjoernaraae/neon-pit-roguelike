@@ -681,13 +681,14 @@ export function drawOverlay(s, ctx, ui, content, isoScale, state) {
     const choices = ui.levelChoices || [];
     const selectedIndex = ui.selectedChoiceIndex || 0;
     
-    console.log("LEVELUP SCREEN - Choices:", choices.length, "Screen:", ui.screen);
+    console.log("LEVELUP SCREEN RENDERING - Choices:", choices.length, "Has choices:", choices.length > 0, "Fanfare:", ui.levelUpFanfareT);
     
     // ALWAYS show choices - fanfare should not block cards (FIXED)
     const showChoices = true;
     
-    // NOTE: Background overlay is drawn in main render loop, not here
-    // This ensures proper rendering stack order
+    // Draw dark overlay background (since main render loop draws it at wrong opacity)
+    ctx.fillStyle = "rgba(0,0,0,0.76)";
+    ctx.fillRect(0, 0, w, h);
     
     // Level up fanfare: animated text and screen flash (rarity-colored)
     if (ui.levelUpFanfareT > 0) {
