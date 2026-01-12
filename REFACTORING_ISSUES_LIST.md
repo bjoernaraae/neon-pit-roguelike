@@ -12,7 +12,7 @@
 - ✅ **Pause menu admin/volume missing**: Restored full admin panel functionality
 - ✅ **Chest purchase freezes game**: Fixed upgrade card rendering to always show cards
 - ✅ **Console spam from debug logs**: Removed debug console.log statements
-- ✅ **Camera shifts when selecting card**: Camera now snaps to player position before resuming game
+- ✅ **Camera off-center during levelup**: Camera now centers when entering AND exiting levelup screen
 
 ## ✅ Issues Already Fixed
 
