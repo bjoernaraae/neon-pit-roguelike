@@ -5,7 +5,7 @@
 // Isometric rendering constants
 export const ISO_TILE_WIDTH = 64;  // Width of isometric tile
 export const ISO_TILE_HEIGHT = 32; // Height of isometric tile
-export const ISO_MODE = true; // Change to true to enable isometric view
+export const ISO_MODE = false; // Change to true to enable isometric view (currently using top-down)
 
 // Collision margin constants for isometric cube collision
 export const COLLISION_MARGIN_LEFT = 0;   // Left wall (cube's left face)
