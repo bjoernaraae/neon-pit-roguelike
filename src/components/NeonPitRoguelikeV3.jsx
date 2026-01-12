@@ -6002,9 +6002,25 @@ export default function NeonPitRoguelikeV3() {
       
       // Render-only path for non-running screens (menu, levelup, dead, pause)
       if (u.screen !== 'running' || u.pauseMenu) {
-        // CRITICAL: Update music even in render-only path (for menu music)
-        const dt = 0.016; // ~60fps frame time for menu music updates
+        // CRITICAL: Update music AND fanfare timers even in render-only path
+        const dt = 0.016; // ~60fps frame time
         updateMusic(dt);
+        
+        // CRITICAL FIX: Update fanfare timers on levelup screen
+        if (u.screen === 'levelup') {
+          const u2 = { ...u };
+          if (u2.levelUpFanfareT > 0) {
+            u2.levelUpFanfareT = Math.max(0, u2.levelUpFanfareT - dt);
+          }
+          if (u2.chestOpenFanfareT > 0) {
+            u2.chestOpenFanfareT = Math.max(0, u2.chestOpenFanfareT - dt);
+          }
+          // Only update if timers actually changed
+          if (u2.levelUpFanfareT !== u.levelUpFanfareT || u2.chestOpenFanfareT !== u.chestOpenFanfareT) {
+            uiRef.current = u2;
+            setUi(u2);
+          }
+        }
         
         // Clear and setup canvas
         ctx.clearRect(0, 0, w, h);
