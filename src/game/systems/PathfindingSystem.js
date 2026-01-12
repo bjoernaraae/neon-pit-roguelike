@@ -221,7 +221,12 @@ export function getFlowDirection(x, y, flowFieldData) {
   const centerGridX = Math.floor(gridX);
   const centerGridY = Math.floor(gridY);
   
-  // Clamp center to grid bounds
+  // Check if coordinates are completely out of bounds
+  if (centerGridX < 0 || centerGridX >= gridW || centerGridY < 0 || centerGridY >= gridH) {
+    return { x: 0, y: 0 }; // Out of bounds - return zero vector
+  }
+  
+  // Clamp center to grid bounds (for edge cases where we're at the boundary)
   const clampedCenterX = Math.max(0, Math.min(centerGridX, gridW - 1));
   const clampedCenterY = Math.max(0, Math.min(centerGridY, gridH - 1));
   

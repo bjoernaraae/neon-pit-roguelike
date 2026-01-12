@@ -48,5 +48,5 @@ export const dist2 = (ax, ay, bx, by) => {
  * @returns {string} Formatted number string
  */
 export function format(n) {
-  return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return n.toLocaleString('en-US', { maximumFractionDigits: 0 });
 }

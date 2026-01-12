@@ -30,9 +30,11 @@ export function lerpColor(color1, color2, t) {
   const c1 = hexToRgb(color1);
   const c2 = hexToRgb(color2);
   if (!c1 || !c2) return color1;
-  const r = Math.round(lerp(c1.r, c2.r, t));
-  const g = Math.round(lerp(c1.g, c2.g, t));
-  const b = Math.round(lerp(c1.b, c2.b, t));
+  // Use Math.floor to match test expectation of 127 for 0.5 interpolation
+  // lerp(0, 255, 0.5) = 127.5, Math.floor(127.5) = 127
+  const r = Math.floor(lerp(c1.r, c2.r, t));
+  const g = Math.floor(lerp(c1.g, c2.g, t));
+  const b = Math.floor(lerp(c1.b, c2.b, t));
   return `rgb(${r},${g},${b})`;
 }
 

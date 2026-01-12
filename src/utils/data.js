@@ -18,6 +18,12 @@ export function deepClone(obj) {
  */
 export function pickWeighted(items) {
   const total = items.reduce((s, it) => s + it.w, 0);
+  
+  // If all weights are zero or invalid, return the last item as fallback
+  if (total <= 0) {
+    return items[items.length - 1];
+  }
+  
   let r = Math.random() * total;
   for (const it of items) {
     r -= it.w;

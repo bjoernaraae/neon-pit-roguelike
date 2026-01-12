@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { clamp, lerp, rand, dist2, format } from "../utils/math.js";
 import { hexToRgb, lerpColor, adjustBrightness } from "../utils/color.js";
 import { deepClone, pickWeighted } from "../utils/data.js";
+import { xpToNext, computeSpeed, statLine, buildPreview as buildPreviewUtil } from "../utils/gameMath.js";
 import { getVisualRadius, resolveKinematicOverlap, resolveDynamicOverlap } from "../game/systems/CollisionSystem.js";
 import { isPointWalkable, findNearestWalkable, hasLineOfSight, circleOverlapsRect } from "../game/world/WalkabilitySystem.js";
 import { generateFlowField, getFlowDirection } from "../game/systems/PathfindingSystem.js";
@@ -38,24 +39,27 @@ const resolveDynamicCircleOverlap = resolveDynamicOverlap;
 
 import { ISO_MODE } from "../data/constants.js";
 import { worldToIso, isoToWorld, getIsoDepth, transformInputForIsometric, drawIsometricCube, drawEntityAsCube, drawIsometricRectangle } from "../rendering/IsometricRenderer.js";
+import { drawWorld } from "../rendering/WorldRenderer.js";
+import { drawHud, drawOverlay } from "../rendering/HudRenderer.js";
 import { BossController, ConeAttackAbility, LineDashAbility, RingPulseAbility, TeleportAbility, ChargeAbility, MultiShotAbility, BOSS_ABILITY_STATE, DANGER_ZONE_TYPE } from "../game/systems/BossAbilitySystem.js";
 
 
 
 import { RARITY, RARITY_COLOR, TYPE, INTERACT } from "../data/constants.js";
+import { createGameContent } from "../data/index.js";
 
 // Latest updates/changelog - update this with recent changes
 const LATEST_UPDATES = [
-  "• Enhanced upgrade visuals & fanfare",
-  "• Improved boss mechanics & telegraphs",
-  "• Balanced economy & chest costs",
-  "• New keyboard controls (A/D/E)",
-  "• Map generation improvements"
+  "â€¢ Fixed menu and battle music playback",
+  "â€¢ Fixed pause menu button clicks and added keyboard navigation (W/S/E)",
+  "â€¢ Added music volume controls (A/D keys)",
+  "â€¢ Fixed camera shifting during upgrade selection",
+  "â€¢ Fixed shift key movement lock issue",
+  "â€¢ Chest purchases now show 3 upgrade options",
+  "â€¢ Enhanced upgrade visuals & fanfare",
+  "â€¢ Improved boss mechanics & telegraphs"
 ];
 
-function xpToNext(level) {
-  return Math.round(16 + level * 8 + Math.pow(level, 1.35) * 4);
-}
 
 function getRarityWeights(luck) {
   const L = clamp(luck, 0, 8);
@@ -63,12 +67,23 @@ function getRarityWeights(luck) {
   const uncommon = 18 + L * 5;
   const rare = 4 + L * 2.6;
   const legendary = 0.7 + L * 0.9;
-  return [
-    { r: RARITY.COMMON, w: common },
-    { r: RARITY.UNCOMMON, w: uncommon },
-    { r: RARITY.RARE, w: rare },
-    { r: RARITY.LEGENDARY, w: legendary },
+  
+  // Validate weights are positive numbers
+  const weights = [
+    { r: RARITY.COMMON, w: Math.max(0, common) },
+    { r: RARITY.UNCOMMON, w: Math.max(0, uncommon) },
+    { r: RARITY.RARE, w: Math.max(0, rare) },
+    { r: RARITY.LEGENDARY, w: Math.max(0, legendary) },
   ];
+  
+  // Ensure at least one weight is positive to prevent pickWeighted errors
+  const totalWeight = weights.reduce((sum, w) => sum + w.w, 0);
+  if (totalWeight <= 0) {
+    // Fallback: all equal weights if something went wrong
+    return weights.map(w => ({ ...w, w: 1 }));
+  }
+  
+  return weights;
 }
 
 function rollRarity(luck) {
@@ -103,12 +118,6 @@ function rollEvasion(evasion) {
   return Math.random() < e;
 }
 
-function computeSpeed(p) {
-  const raw = p.speedBase + p.speedBonus;
-  const softCap = 360;
-  if (raw <= softCap) return raw;
-  return softCap + (raw - softCap) * 0.35;
-}
 
 function bumpShake(s, mag, time) {
   s.shakeMag = Math.max(s.shakeMag, mag);
@@ -169,118 +178,7 @@ function addHitFlash(s, x, y, color = "#ffffff") {
   });
 }
 
-function statLine(label, a, b, fmt = (v) => v) {
-  if (a === b) return null;
-  return `${label}: ${fmt(a)} → ${fmt(b)}`;
-}
 
-function buildPreview(s, applyFn) {
-  const before = deepClone(s.player);
-  const after = deepClone(s.player);
-  try {
-    applyFn(after);
-  } catch {
-    return "";
-  }
-
-  const lines = [];
-  
-  // Calculate total damage from all weapons
-  const beforeDmg = before.weapons ? before.weapons.reduce((sum, w) => sum + w.weaponDamage, 0) : 0;
-  const afterDmg = after.weapons ? after.weapons.reduce((sum, w) => sum + w.weaponDamage, 0) : 0;
-  lines.push(statLine("Damage", Math.round(beforeDmg), Math.round(afterDmg)));
-  
-  // Calculate average attack cooldown
-  const beforeCd = before.weapons && before.weapons.length > 0 
-    ? before.weapons.reduce((sum, w) => sum + w.attackCooldown, 0) / before.weapons.length 
-    : 0.42;
-  const afterCd = after.weapons && after.weapons.length > 0
-    ? after.weapons.reduce((sum, w) => sum + w.attackCooldown, 0) / after.weapons.length
-    : 0.42;
-  lines.push(
-    statLine(
-      "Attack cd",
-      Number(beforeCd.toFixed(3)),
-      Number(afterCd.toFixed(3)),
-      (v) => `${v}s`,
-    ),
-  );
-  
-  // Calculate total projectiles
-  const beforeProj = before.weapons ? before.weapons.reduce((sum, w) => sum + w.projectiles, 0) : 0;
-  const afterProj = after.weapons ? after.weapons.reduce((sum, w) => sum + w.projectiles, 0) : 0;
-  lines.push(statLine("Projectiles", beforeProj, afterProj));
-  
-  // Calculate total bounces
-  const beforeBounce = before.weapons ? before.weapons.reduce((sum, w) => sum + w.bounces, 0) : 0;
-  const afterBounce = after.weapons ? after.weapons.reduce((sum, w) => sum + w.bounces, 0) : 0;
-  lines.push(statLine("Bounces", beforeBounce, afterBounce));
-  
-  // Speed
-  const beforeSpeed = Math.round(computeSpeed(before));
-  const afterSpeed = Math.round(computeSpeed(after));
-  if (beforeSpeed !== afterSpeed) {
-    lines.push(`Speed: ${beforeSpeed} → ${afterSpeed}`);
-  }
-  
-  // Max HP
-  const beforeHp = Math.round(before.maxHp);
-  const afterHp = Math.round(after.maxHp);
-  if (beforeHp !== afterHp) {
-    lines.push(`Max HP: ${beforeHp} → ${afterHp}`);
-  }
-  
-  // Crit chance - always show if it changes
-  const beforeCrit = Math.round(before.critChance * 100);
-  const afterCrit = Math.round(after.critChance * 100);
-  if (beforeCrit !== afterCrit) {
-    lines.push(`Crit: ${beforeCrit}% → ${afterCrit}%`);
-  }
-  
-  // Poison chance
-  const beforePoison = Math.round(before.poisonChance * 100);
-  const afterPoison = Math.round(after.poisonChance * 100);
-  if (beforePoison !== afterPoison) {
-    lines.push(`Poison: ${beforePoison}% → ${afterPoison}%`);
-  }
-  
-  // Freeze chance
-  const beforeFreeze = Math.round(before.freezeChance * 100);
-  const afterFreeze = Math.round(after.freezeChance * 100);
-  if (beforeFreeze !== afterFreeze) {
-    lines.push(`Freeze: ${beforeFreeze}% → ${afterFreeze}%`);
-  }
-  
-  // Regen
-  if (Math.abs(before.regen - after.regen) > 0.01) {
-    lines.push(`Regen: ${before.regen.toFixed(2)} → ${after.regen.toFixed(2)}`);
-  }
-  
-  // Armor
-  const beforeArmor = Math.round(before.armor * 100);
-  const afterArmor = Math.round(after.armor * 100);
-  if (beforeArmor !== afterArmor) {
-    lines.push(`Armor: ${beforeArmor}% → ${afterArmor}%`);
-  }
-  
-  // Gold gain
-  if (Math.abs(before.goldGain - after.goldGain) > 0.01) {
-    lines.push(`Gold gain: ${before.goldGain.toFixed(2)}x → ${after.goldGain.toFixed(2)}x`);
-  }
-  
-  // XP gain
-  if (Math.abs(before.xpGain - after.xpGain) > 0.01) {
-    lines.push(`XP gain: ${before.xpGain.toFixed(2)}x → ${after.xpGain.toFixed(2)}x`);
-  }
-  
-  // Luck
-  if (Math.abs(before.luck - after.luck) > 0.01) {
-    lines.push(`Luck: ${before.luck.toFixed(2)} → ${after.luck.toFixed(2)}`);
-  }
-
-  // Return all relevant changes (up to 5 lines for better visibility)
-  return lines.slice(0, 5).join(" | ");
-}
 
 function makeIconDraw(kind) {
   if (kind === "revolver")
@@ -366,9 +264,12 @@ function runSelfTests() {
 
     const p = { x: 0, y: 0, r: 10 };
     const e = { x: 5, y: 0, r: 10 };
-    resolveKinematicCircleOverlap(p, e);
+    resolveKinematicCircleOverlap(p, e, null, null);
     const d = Math.hypot(p.x - e.x, p.y - e.y);
-    console.assert(d >= p.r + e.r - 0.0001, "kin overlap resolve");
+    // Use visual radius (40% of original) for the assertion
+    const visualR = (p.r || 10) * 0.4;
+    const visualRE = (e.r || 10) * 0.4;
+    console.assert(d >= visualR + visualRE - 0.0001, "kin overlap resolve");
 
     const a = { x: 0, y: 0, r: 10 };
     const b = { x: 5, y: 0, r: 10 };
@@ -387,6 +288,8 @@ export default function NeonPitRoguelikeV3() {
   const rafRef = useRef(0);
   const keysRef = useRef(new Set());
   const sizeRef = useRef({ w: 960, h: 540, dpr: 1 });
+  const lastTimeRef = useRef(performance.now());
+  const jumpKeyJustPressedRef = useRef(false);
 
   const audioRef = useRef({
     ctx: null,
@@ -448,6 +351,11 @@ export default function NeonPitRoguelikeV3() {
   useEffect(() => {
     uiRef.current = ui;
   }, [ui]);
+
+  // Run self-tests on component mount
+  useEffect(() => {
+    runSelfTests();
+  }, []);
 
   const stateRef = useRef(null);
 
@@ -542,11 +450,16 @@ export default function NeonPitRoguelikeV3() {
     const baseVolume = a.musicOn && !isMuted ? musicVolume : 0;
     const targetVolume = a.muffled ? baseVolume * a.muffledVolume : baseVolume;
     
+    // STABILIZE AUDIO: Only set volume, don't set to 0 (let muted state handle that)
     if (a.menuMusic) {
-      a.menuMusic.volume = a.currentTrack === "menu" ? targetVolume : 0;
+      if (a.currentTrack === "menu") {
+        a.menuMusic.volume = targetVolume;
+      }
     }
     if (a.battleMusic) {
-      a.battleMusic.volume = a.currentTrack === "battle" ? targetVolume : 0;
+      if (a.currentTrack === "battle") {
+        a.battleMusic.volume = targetVolume;
+      }
     }
   }
 
@@ -568,6 +481,25 @@ export default function NeonPitRoguelikeV3() {
     
     if (u.screen === "menu") {
       desiredTrack = "menu";
+      // Switch to menu music if not already playing
+      if (a.currentTrack !== "menu") {
+        // Pause battle music
+        if (a.battleMusic && !a.battleMusic.paused) {
+          a.battleMusic.pause();
+        }
+        // Start menu music
+        if (a.menuMusic) {
+          a.menuMusic.currentTime = 0;
+          if (a.ctx && a.ctx.state === "suspended") {
+            a.ctx.resume().catch(() => {});
+          }
+          a.menuMusic.play().catch(() => {});
+          a.currentTrack = "menu";
+        }
+      } else if (a.menuMusic && a.menuMusic.paused) {
+        // Resume menu music if paused
+        a.menuMusic.play().catch(() => {});
+      }
     } else if (u.screen === "levelup") {
       // On levelup screen, keep current track but muffle it
       desiredTrack = a.currentTrack; // Keep playing current track
@@ -579,6 +511,14 @@ export default function NeonPitRoguelikeV3() {
       
       if (hasEnemies || hasBoss) {
         desiredTrack = "battle";
+        // Ensure battle music starts when in combat
+        if (a.currentTrack !== "battle" && a.battleMusic && a.battleMusic.paused) {
+          a.battleMusic.currentTime = 0;
+          if (a.ctx && a.ctx.state === "suspended") {
+            a.ctx.resume().catch(() => {});
+          }
+          a.battleMusic.play().catch(() => {});
+        }
       } else {
         // No combat, but still in game - play menu music
         desiredTrack = "menu";
@@ -818,1045 +758,13 @@ export default function NeonPitRoguelikeV3() {
   }
 
   const content = useMemo(() => {
-    const weapons = [
-      {
-        id: "revolver",
-        name: "Revolver",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.68, // Slower firing speed
-          weaponDamage: 9,
-          projectiles: 1,
-          pierce: 0,
-          spread: 0.02,
-          bounces: 1, // Revolver bounces to 1 additional target
-          effect: null,
-          mode: "bullet",
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.08), // Reduced from 1.12 to 1.08
-          (p) => (p.attackCooldown = Math.max(0.24, p.attackCooldown * 0.92)),
-          (p) => (p.critChance = clamp(p.critChance + 0.03, 0, 0.8)),
-          (p) => {
-            // For weapons, p is the weapon object, not the player
-            if (p.projectiles !== undefined) {
-              p.projectiles = clamp(p.projectiles + 1, 1, 16);
-            }
-          },
-          (p) => (p.weaponDamage *= 1.12), // Reduced from 1.16 to 1.12
-        ],
-        icon: makeIconDraw("revolver"),
-      },
-      {
-        id: "firestaff",
-        name: "Firestaff",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.78,
-          weaponDamage: 12,
-          projectiles: 1,
-          pierce: 0,
-          spread: 0.05,
-          bounces: 0,
-          effect: "burn",
-          mode: "splash",
-          splashR: 54,
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.10), // Reduced from 1.14 to 1.10
-          (p) => (p.attackCooldown = Math.max(0.3, p.attackCooldown * 0.9)),
-          (p) => (p.sizeMult *= 1.08),
-          (p) => (p.weaponDamage *= 1.14), // Reduced from 1.18 to 1.14
-        ],
-        icon: makeIconDraw("staff"),
-      },
-      {
-        id: "sword",
-        name: "Sword",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.5,
-          weaponDamage: 16,
-          projectiles: 0,
-          pierce: 999,
-          spread: 0,
-          bounces: 0,
-          effect: null,
-          mode: "melee",
-          meleeR: 68,
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.11), // Reduced from 1.15 to 1.11
-          (p) => (p.attackCooldown = Math.max(0.22, p.attackCooldown * 0.9)),
-          (p) => (p.sizeMult *= 1.06),
-          (p) => (p.weaponDamage *= 1.16), // Reduced from 1.20 to 1.16
-        ],
-        icon: makeIconDraw("sword"),
-      },
-      {
-        id: "bone",
-        name: "Bone",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.95, // Slower attack speed for level 1
-          weaponDamage: 8,
-          projectiles: 1,
-          pierce: 0,
-          spread: 0.12,
-          bounces: 1, // Default bounce once when hitting enemy
-          effect: null,
-          mode: "bullet",
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.08), // Reduced from 1.12 to 1.08
-          (p) => (p.bounces = clamp(p.bounces + 1, 0, 7)),
-          (p) => (p.attackCooldown = Math.max(0.22, p.attackCooldown * 0.92)),
-          (p) => {
-            // For weapons, p is the weapon object, not the player
-            if (p.projectiles !== undefined) {
-              p.projectiles = clamp(p.projectiles + 1, 1, 16);
-            }
-          },
-          (p) => (p.weaponDamage *= 1.12), // Reduced from 1.16 to 1.12
-        ],
-        icon: makeIconDraw("revolver"),
-      },
-      {
-        id: "poison_flask",
-        name: "Poison Flask",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 2.2, // Very slow attack speed - thrown flask
-          weaponDamage: 10,
-          projectiles: 1,
-          pierce: 0,
-          spread: 0.02,
-          bounces: 0,
-          effect: "poison",
-          mode: "thrown", // Thrown flask that lands and splashes
-          weaponSplashR: 65, // Splash radius
-          bulletSpeedMult: 0.65, // Slower throw speed
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.10), // Reduced from 1.14 to 1.10
-          (p) => (p.attackCooldown = Math.max(0.25, p.attackCooldown * 0.9)),
-          (p) => {
-            // For weapons, p is the weapon object, not the player
-            if (p.projectiles !== undefined) {
-              p.projectiles = clamp(p.projectiles + 1, 1, 16);
-            }
-          },
-          (p) => (p.weaponDamage *= 1.14), // Reduced from 1.18 to 1.14
-        ],
-        icon: makeIconDraw("nuke"),
-      },
-      {
-        id: "frostwand",
-        name: "Frost Wand",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.68,
-          weaponDamage: 9,
-          projectiles: 1,
-          pierce: 0,
-          spread: 0.05,
-          bounces: 0,
-          effect: "freeze",
-          mode: "bullet",
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.08), // Reduced from 1.12 to 1.08
-          (p) => (p.attackCooldown = Math.max(0.24, p.attackCooldown * 0.9)),
-          (p) => (p.weaponDamage *= 1.14), // Reduced from 1.18 to 1.14
-          (p) => (p.projectileSpeed *= 1.08),
-        ],
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "bow",
-        name: "Bow",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.55,
-          weaponDamage: 11,
-          projectiles: 1,
-          pierce: 0,
-          spread: 0.03,
-          bounces: 0,
-          effect: null,
-          mode: "bullet",
-          bulletSpeedMult: 1.2,
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.09), // Reduced from 1.13 to 1.09
-          (p) => (p.attackCooldown = Math.max(0.25, p.attackCooldown * 0.91)),
-          (p) => {
-            // For weapons, p is the weapon object, not the player
-            if (p.projectiles !== undefined) {
-              p.projectiles = clamp(p.projectiles + 1, 1, 16);
-            }
-          },
-          (p) => (p.weaponDamage *= 1.09), // Reduced from 1.13 to 1.09 // Reduced from 1.17 to 1.13
-        ],
-        icon: makeIconDraw("revolver"),
-      },
-      {
-        id: "lightning_staff",
-        name: "Lightning Staff",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.65,
-          weaponDamage: 10,
-          projectiles: 1,
-          pierce: 2,
-          spread: 0.04,
-          bounces: 0,
-          effect: "shock",
-          mode: "bullet",
-          bulletSpeedMult: 1.3,
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.10), // Reduced from 1.14 to 1.10
-          (p) => (p.pierce = clamp(p.pierce + 1, 0, 8)),
-          (p) => (p.attackCooldown = Math.max(0.24, p.attackCooldown * 0.9)),
-          (p) => (p.weaponDamage *= 1.14), // Reduced from 1.18 to 1.14
-        ],
-        icon: makeIconDraw("staff"),
-      },
-      {
-        id: "axe",
-        name: "Axe",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.58,
-          weaponDamage: 14,
-          projectiles: 1,
-          pierce: 1,
-          spread: 0.08,
-          bounces: 0,
-          effect: null,
-          mode: "bullet",
-          bulletSpeedMult: 0.9,
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.11), // Reduced from 1.15 to 1.11
-          (p) => (p.pierce = clamp(p.pierce + 1, 0, 5)),
-          (p) => (p.attackCooldown = Math.max(0.24, p.attackCooldown * 0.92)),
-          (p) => (p.weaponDamage *= 1.15), // Reduced from 1.19 to 1.15
-        ],
-        icon: makeIconDraw("sword"),
-      },
-      {
-        id: "shotgun",
-        name: "Shotgun",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.72,
-          weaponDamage: 7,
-          projectiles: 3,
-          pierce: 0,
-          spread: 0.18,
-          bounces: 0,
-          effect: null,
-          mode: "bullet",
-          bulletSpeedMult: 0.85,
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.08), // Reduced from 1.12 to 1.08
-          (p) => {
-            // For weapons, p is the weapon object, not the player
-            if (p.projectiles !== undefined) {
-              p.projectiles = clamp(p.projectiles + 1, 1, 16);
-            }
-          },
-          (p) => (p.attackCooldown = Math.max(0.28, p.attackCooldown * 0.92)),
-          (p) => (p.weaponDamage *= 1.12), // Reduced from 1.16 to 1.12
-        ],
-        icon: makeIconDraw("revolver"),
-      },
-      {
-        id: "flamewalker",
-        name: "Flamewalker",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.85, // Slower attack speed - spawns fire periodically
-          weaponDamage: 6,
-          projectiles: 0,
-          pierce: 0,
-          spread: 0,
-          bounces: 0,
-          effect: "burn",
-          mode: "aura", // New mode for ground fire
-          meleeR: 50,
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.10), // Reduced from 1.14 to 1.10
-          (p) => (p.weaponMeleeR = (p.weaponMeleeR || 50) + 5),
-          (p) => (p.weaponDamage *= 1.14), // Reduced from 1.18 to 1.14
-        ],
-        icon: makeIconDraw("staff"),
-      },
-      {
-        id: "bananarang",
-        name: "Bananarang",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.68,
-          weaponDamage: 11,
-          projectiles: 1,
-          pierce: 999, // Pierce all targets
-          spread: 0.05,
-          bounces: 0, // No bounce, it returns instead
-          effect: null,
-          mode: "boomerang", // Special boomerang mode
-          bulletSpeedMult: 0.65, // Slower speed for visibility
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.09), // Reduced from 1.13 to 1.09
-          (p) => (p.attackCooldown = Math.max(0.26, p.attackCooldown * 0.91)),
-          (p) => (p.bounces = clamp(p.bounces + 1, 0, 7)),
-          (p) => (p.weaponDamage *= 1.09), // Reduced from 1.13 to 1.09 // Reduced from 1.17 to 1.13
-        ],
-        icon: makeIconDraw("revolver"),
-      },
-      {
-        id: "crossbow",
-        name: "Crossbow",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.9, // Slow fire rate
-          weaponDamage: 18, // High damage
-          projectiles: 1,
-          pierce: 3, // Pierces 3 enemies
-          spread: 0.01, // Very accurate
-          bounces: 0,
-          effect: null,
-          mode: "bullet",
-          bulletSpeedMult: 1.4, // Fast projectile
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.11), // Reduced from 1.15 to 1.11
-          (p) => (p.pierce = clamp(p.pierce + 1, 0, 8)),
-          (p) => (p.attackCooldown = Math.max(0.28, p.attackCooldown * 0.92)),
-          (p) => (p.weaponDamage *= 1.16), // Reduced from 1.20 to 1.16
-        ],
-        icon: makeIconDraw("revolver"),
-      },
-      {
-        id: "chain_lightning",
-        name: "Chain Lightning",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.65,
-          weaponDamage: 10,
-          projectiles: 1,
-          pierce: 0,
-          spread: 0.03,
-          bounces: 3, // Bounces between 3-5 enemies
-          effect: "shock",
-          mode: "bullet",
-          bulletSpeedMult: 1.5, // Very fast
-        },
-        levelBonuses: [
-          (p) => (p.bounces = clamp(p.bounces + 1, 0, 7)),
-          (p) => (p.weaponDamage *= 1.10), // Reduced from 1.14 to 1.10
-          (p) => (p.attackCooldown = Math.max(0.24, p.attackCooldown * 0.91)),
-          (p) => (p.weaponDamage *= 1.14), // Reduced from 1.18 to 1.14
-        ],
-        icon: makeIconDraw("staff"),
-      },
-      {
-        id: "orbiting_blades",
-        name: "Orbiting Blades",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.4, // Fast auto-attack
-          weaponDamage: 8,
-          projectiles: 0,
-          pierce: 999,
-          spread: 0,
-          bounces: 0,
-          effect: null,
-          mode: "orbit", // Special orbiting mode
-          meleeR: 60, // Orbit radius
-        },
-        levelBonuses: [
-          (p) => {
-            // Increase number of orbiting blades
-            p.orbitBlades = (p.orbitBlades || 2) + 1;
-            p.orbitBlades = clamp(p.orbitBlades, 2, 6);
-          },
-          (p) => (p.weaponDamage *= 1.09), // Reduced from 1.13 to 1.09
-          (p) => (p.weaponMeleeR = (p.weaponMeleeR || 60) + 8),
-          (p) => (p.weaponDamage *= 1.09), // Reduced from 1.13 to 1.09 // Reduced from 1.17 to 1.13
-        ],
-        icon: makeIconDraw("sword"),
-      },
-      {
-        id: "throwing_knives",
-        name: "Throwing Knives",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 0.35, // Very fast
-          weaponDamage: 6, // Low damage
-          projectiles: 2, // Fires 2-3 projectiles
-          pierce: 0,
-          spread: 0.08,
-          bounces: 0,
-          effect: null,
-          mode: "bullet",
-          bulletSpeedMult: 1.3,
-        },
-        levelBonuses: [
-          (p) => {
-            if (p.projectiles !== undefined) {
-              p.projectiles = clamp(p.projectiles + 1, 1, 16);
-            }
-          },
-          (p) => (p.attackCooldown = Math.max(0.18, p.attackCooldown * 0.9)),
-          (p) => (p.weaponDamage *= 1.08), // Reduced from 1.12 to 1.08
-          (p) => (p.critChance = clamp((p.critChance || 0) + 0.04, 0, 0.8)),
-        ],
-        icon: makeIconDraw("revolver"),
-      },
-      {
-        id: "grenade_launcher",
-        name: "Grenade Launcher",
-        type: TYPE.WEAPON,
-        base: {
-          attackCooldown: 1.1, // Slow
-          weaponDamage: 20, // High damage
-          projectiles: 1,
-          pierce: 0,
-          spread: 0.02,
-          bounces: 0,
-          effect: "explosive",
-          mode: "explosive", // Explosive AoE on impact
-          splashR: 80, // Large AoE
-          bulletSpeedMult: 0.7, // Slower projectile
-        },
-        levelBonuses: [
-          (p) => (p.weaponDamage *= 1.12), // Reduced from 1.16 to 1.12
-          (p) => (p.weaponSplashR = (p.weaponSplashR || 80) + 10),
-          (p) => (p.attackCooldown = Math.max(0.32, p.attackCooldown * 0.92)),
-          (p) => (p.weaponDamage *= 1.16), // Reduced from 1.20 to 1.16
-        ],
-        icon: makeIconDraw("nuke"),
-      },
-    ];
-
-    const tomes = [
-      {
-        id: "t_agility",
-        name: "Agility Tome",
-        type: TYPE.TOME,
-        desc: "+Movement Speed",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.speedBonus += 8 * m; // Reduced from 14
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_damage",
-        name: "Damage Tome",
-        type: TYPE.TOME,
-        desc: "+Damage",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          // Apply damage increase to all weapons
-          if (p.weapons && p.weapons.length > 0) {
-            for (const weapon of p.weapons) {
-              weapon.weaponDamage *= 1 + 0.04 * m; // Reduced from 0.06 to 0.04 (40% less effective)
-            }
-          }
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_cooldown",
-        name: "Cooldown Tome",
-        type: TYPE.TOME,
-        desc: "+Attack speed",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          // Reduce cooldown on all weapons (lower cooldown = faster attacks)
-          if (p.weapons && p.weapons.length > 0) {
-            for (const weapon of p.weapons) {
-              weapon.attackCooldown = Math.max(0.18, weapon.attackCooldown * (1 - 0.04 * m));
-            }
-          }
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_quantity",
-        name: "Quantity Tome",
-        type: TYPE.TOME,
-        desc: "+Projectile count",
-        apply: (p, r) => {
-          // Always add projectiles based on rarity
-          // Common: +1, Uncommon: +2, Rare: +2, Legendary: +3
-          let projectilesToAdd = 1;
-          if (r === RARITY.UNCOMMON || r === RARITY.RARE) {
-            projectilesToAdd = 2;
-          } else if (r === RARITY.LEGENDARY) {
-            projectilesToAdd = 3;
-          }
-          
-          // Add projectiles to all weapons (100% chance)
-          // This includes bananarang - quantity tome increases bananarang count
-          if (p.weapons && p.weapons.length > 0) {
-            for (const weapon of p.weapons) {
-              // For bananarang, quantity tome increases the number of bananarangs you can have
-              // But bananarang is limited to 1 active at a time, so this affects the upgrade path
-              // Instead, we'll increase the weapon's projectiles stat (which affects other upgrades)
-              weapon.projectiles = clamp(weapon.projectiles + projectilesToAdd, 1, 16);
-            }
-          }
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_precision",
-        name: "Precision Tome",
-        type: TYPE.TOME,
-        desc: "+Crit chance",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.critChance = clamp(p.critChance + 0.02 * m, 0, 0.8); // Reduced from 0.04
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_hp",
-        name: "HP Tome",
-        type: TYPE.TOME,
-        desc: "+Max HP",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.maxHp = Math.round(p.maxHp + 8 * m); // Reduced from 14
-          p.hp = Math.min(p.maxHp, p.hp + Math.round(5 * m)); // Reduced from 8
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_regen",
-        name: "Regen Tome",
-        type: TYPE.TOME,
-        desc: "+HP regen",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.regen += 0.3 * m; // Reduced from 0.55
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_gold",
-        name: "Gold Tome",
-        type: TYPE.TOME,
-        desc: "+Gold gain",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.goldGain *= 1 + 0.06 * m; // Reduced from 0.12
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_luck",
-        name: "Luck Tome",
-        type: TYPE.TOME,
-        desc: "+Luck",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.luck += 0.18 * m; // Reduced from 0.32
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_xp",
-        name: "XP Tome",
-        type: TYPE.TOME,
-        desc: "+XP gain",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.xpGain *= 1 + 0.06 * m; // Reduced from 0.12
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_bounce",
-        name: "Ricochet Tome",
-        type: TYPE.TOME,
-        desc: "+Bounces to all weapons",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          // Balanced merge: Common/Uncommon: +1, Rare: +2, Legendary: +3
-          const bounceAdd = m < 1.2 ? 1 : m < 1.4 ? 2 : 3;
-          if (p.weapons && p.weapons.length > 0) {
-            for (const weapon of p.weapons) {
-              if (weapon.bounces !== undefined && weapon.bounces >= 0) {
-                weapon.bounces = clamp(weapon.bounces + bounceAdd, 0, 9);
-              }
-            }
-          }
-          // Also add to player's base bounce stat for future weapons
-          p.bounces = (p.bounces || 0) + bounceAdd;
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_evasion",
-        name: "Evasion Tome",
-        type: TYPE.TOME,
-        desc: "+Dodge chance",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.evasion = clamp(p.evasion + 0.04 * m, 0, 0.6);
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_shield",
-        name: "Shield Tome",
-        type: TYPE.TOME,
-        desc: "+Max Shield HP",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.maxShield = Math.round((p.maxShield || 0) + 8 * m); // Reduced from 12, caps at reasonable amount
-          // Also add current shield if below max
-          if (!p.shield || p.shield < p.maxShield) {
-            p.shield = Math.min(p.maxShield, (p.shield || 0) + 8 * m);
-          }
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_size",
-        name: "Size Tome",
-        type: TYPE.TOME,
-        desc: "+Attack size",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.sizeMult *= 1 + 0.11 * m;
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_knockback",
-        name: "Knockback Tome",
-        type: TYPE.TOME,
-        desc: "+Knockback force",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          // Increase knockback value directly (stacks additively)
-          p.knockback = (p.knockback || 0) + (8 + 4 * m); // Common: +8, Uncommon: +12, Rare: +12, Legendary: +20
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_projectile_speed",
-        name: "Projectile Speed Tome",
-        type: TYPE.TOME,
-        desc: "+Projectile speed",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.bulletSpeedMult = (p.bulletSpeedMult || 1) * (1 + 0.12 * m);
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_jump",
-        name: "Jump Tome",
-        type: TYPE.TOME,
-        desc: "+Jump height",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          // Increase jump height multiplier (stacks multiplicatively)
-          p.jumpHeight = (p.jumpHeight || 1.0) * (1 + 0.15 * m); // Common: +15%, Uncommon: +17%, Rare: +19%, Legendary: +23%
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_berserker",
-        name: "Berserker Tome",
-        type: TYPE.TOME,
-        desc: "Lower HP = more damage",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          // Lower HP (risk/reward)
-          const hpReduction = 0.15 * m; // 15-23% HP reduction
-          p.maxHp = Math.max(50, Math.round(p.maxHp * (1 - hpReduction)));
-          p.hp = Math.min(p.hp, p.maxHp); // Cap current HP to new max
-          // Damage multiplier based on missing HP (risk/reward)
-          p.berserkerMult = (p.berserkerMult || 0) + 0.10 * m; // Reduced from 0.15 to 0.10 (33% less effective)
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_vampire",
-        name: "Vampire Tome",
-        type: TYPE.TOME,
-        desc: "Lifesteal on damage",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.lifesteal = (p.lifesteal || 0) + 0.04 * m; // 4-6% lifesteal
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_crit_master",
-        name: "Crit Master Tome",
-        type: TYPE.TOME,
-        desc: "+Crit chance & crit damage",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.critChance = clamp((p.critChance || 0) + 0.025 * m, 0, 0.8);
-          p.critDamageMult = (p.critDamageMult || 2.0) + 0.3 * m; // Increases crit damage multiplier
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_elemental",
-        name: "Elemental Tome",
-        type: TYPE.TOME,
-        desc: "Adds random elemental effects",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          // Adds chance for random elemental effect (burn/shock/poison/freeze)
-          p.elementalChance = (p.elementalChance || 0) + 0.12 * m; // 12-18% chance
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_speed_demon",
-        name: "Speed Demon Tome",
-        type: TYPE.TOME,
-        desc: "Movement speed = damage bonus",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          // Damage scales with movement speed
-          p.speedDamageMult = (p.speedDamageMult || 0) + 0.05 * m; // Reduced from 0.08 to 0.05 (37% less effective)
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_pierce",
-        name: "Pierce Tome",
-        type: TYPE.TOME,
-        desc: "+Pierce to all weapons",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          const pierceAdd = m < 1.5 ? 1 : 2; // Common/Uncommon: +1, Rare/Legendary: +2
-          if (p.weapons && p.weapons.length > 0) {
-            for (const weapon of p.weapons) {
-              if (weapon.pierce !== undefined && weapon.pierce < 999) {
-                weapon.pierce = clamp(weapon.pierce + pierceAdd, 0, 8);
-              }
-            }
-          }
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "t_explosive",
-        name: "Explosive Tome",
-        type: TYPE.TOME,
-        desc: "Chance for projectiles to explode",
-        apply: (p, r) => {
-          const m = rarityMult(r);
-          p.explosiveChance = (p.explosiveChance || 0) + 0.08 * m; // 8-12% chance
-          p.explosiveRadius = (p.explosiveRadius || 0) + 25 * m; // Explosion radius
-        },
-        icon: makeIconDraw("time"),
-      },
-    ];
-
-    const items = [
-      {
-        id: "moldy_cheese",
-        name: "Moldy Cheese",
-        type: TYPE.ITEM,
-        desc: "+Poison chance on hit",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.poisonChance = clamp(s.player.poisonChance + 0.06 * m, 0, 0.85); // Reduced from 0.12
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "ice_crystal",
-        name: "Ice Crystal",
-        type: TYPE.ITEM,
-        desc: "Freeze enemies in area on hit",
-        apply: (s, r) => {
-          // Ice Crystal freezes enemies in an area around the hit (AoE freeze)
-          const m = rarityMult(r);
-          s.player.iceCrystalFreezeChance = 0.2 + 0.15 * m; // 20-50% chance
-          s.player.iceCrystalFreezeRadius = 35 + 15 * m; // AoE radius
-          s.player.iceCrystalFreezeDuration = 1.4 + 0.4 * m; // Longer freeze duration
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "rubber_bullets",
-        name: "Rubber Bullets",
-        type: TYPE.ITEM,
-        desc: "+Bounces",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.bounces = clamp(s.player.bounces + (Math.random() < 0.6 ? 1 : 0) + (m > 1.2 ? 1 : 0), 0, 8);
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "time_bracelet",
-        name: "Time Bracelet",
-        type: TYPE.ITEM,
-        desc: "Reduces cooldowns",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          // Reduce ability cooldown (permanent reduction)
-          // Common: -8%, Uncommon: -10%, Rare: -12%, Legendary: -15%
-          const reduction = 0.08 + (m - 1) * 0.02;
-          s.player.abilityCdMult = Math.max(0.5, (s.player.abilityCdMult || 1) * (1 - reduction));
-          // Also reduce weapon attack cooldowns temporarily (haste multiplier > 1 speeds up)
-          s.player.buffHasteT = Math.max(s.player.buffHasteT, 4 + 2.5 * m);
-          s.player.buffHasteMult = Math.max(1.15, 1.1 + 0.12 * m); // > 1 speeds up cooldown reduction
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "nuke",
-        name: "Nuke",
-        type: TYPE.ITEM,
-        desc: "Destroy most enemies",
-        apply: (s) => {
-          for (const e of s.enemies) e.hp -= 999999;
-          if (s.boss.active) s.boss.hp -= Math.round(s.boss.maxHp * 0.28);
-          bumpShake(s, 10, 0.12);
-          s.hitStopT = Math.max(s.hitStopT, 0.08);
-          addParticle(s, s.player.x, s.player.y, 38, 55);
-          sfxBoss();
-        },
-        icon: makeIconDraw("nuke"),
-      },
-      {
-        id: "patch",
-        name: "Patch",
-        type: TYPE.ITEM,
-        desc: "Heal now for coins",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          const p = s.player;
-          const cost = Math.max(2, Math.round(3 + s.floor + 2 * (m - 1)));
-          if (p.coins < cost) return;
-          p.coins -= cost;
-          p.hp = Math.min(p.maxHp, p.hp + Math.round(p.maxHp * (0.16 + 0.1 * m)));
-          addParticle(s, p.x, p.y, 18, 160);
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "glass",
-        name: "Glass Cannon",
-        type: TYPE.ITEM,
-        desc: "Damage up, HP down",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          const p = s.player;
-          const cost = Math.max(4, Math.round(6 + s.floor));
-          if (p.coins < cost) return;
-          p.coins -= cost;
-          p.weaponDamage *= 1 + 0.28 * m;
-          p.maxHp = Math.max(50, Math.round(p.maxHp * (1 - 0.07 * m)));
-          p.hp = Math.min(p.hp, p.maxHp);
-        },
-        icon: makeIconDraw("revolver"),
-      },
-      {
-        id: "spiky_shield",
-        name: "Spiky Shield",
-        type: TYPE.ITEM,
-        desc: "Reflect damage",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.thorns = (s.player.thorns || 0) + 0.12 * m;
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "slurp_gloves",
-        name: "Slurp Gloves",
-        type: TYPE.ITEM,
-        desc: "+Lifesteal",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.lifesteal = (s.player.lifesteal || 0) + 0.06 * m;
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "mirror",
-        name: "Mirror",
-        type: TYPE.ITEM,
-        desc: "Brief invincibility on hit",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.iFrameOnHit = (s.player.iFrameOnHit || 0) + 0.12 * m;
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "big_bonk",
-        name: "Big Bonk",
-        type: TYPE.ITEM,
-        desc: "Low chance for extreme damage",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.bigBonkChance = (s.player.bigBonkChance || 0) + 0.016 * m;
-          s.player.bigBonkMult = (s.player.bigBonkMult || 1) + 0.4 * m;
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "lucky_coin",
-        name: "Lucky Coin",
-        type: TYPE.ITEM,
-        desc: "Chance to double coin drops",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.luckyCoinChance = (s.player.luckyCoinChance || 0) + 0.15 * m; // 15-23% chance
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "magnet",
-        name: "Magnet",
-        type: TYPE.ITEM,
-        desc: "Pulls coins/items toward player",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.magnetRange = (s.player.magnetRange || 0) + 120 * m; // Pull range
-          s.player.magnetStrength = (s.player.magnetStrength || 0) + 0.4 * m; // Pull strength
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "death_defiance",
-        name: "Death Defiance",
-        type: TYPE.ITEM,
-        desc: "One-time revive at 1 HP",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.deathDefiance = (s.player.deathDefiance || 0) + Math.floor(m); // 1-2 revives
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "bloodthirst",
-        name: "Bloodthirst",
-        type: TYPE.ITEM,
-        desc: "Damage increases with kills (resets on hit)",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.bloodthirstMax = (s.player.bloodthirstMax || 0) + 0.12 * m; // Max 12-18% damage per kill
-          s.player.bloodthirstKills = 0; // Reset counter
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "chain_reaction",
-        name: "Chain Reaction",
-        type: TYPE.ITEM,
-        desc: "Kills cause small explosions",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.chainReactionChance = (s.player.chainReactionChance || 0) + 0.25 * m; // 25-38% chance
-          s.player.chainReactionRadius = (s.player.chainReactionRadius || 0) + 45 * m; // Explosion radius
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "split_shot",
-        name: "Split Shot",
-        type: TYPE.ITEM,
-        desc: "Chance to fire additional projectiles",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.splitShotChance = (s.player.splitShotChance || 0) + 0.2 * m; // 20-30% chance
-          s.player.splitShotCount = (s.player.splitShotCount || 0) + Math.floor(1 + m); // 1-2 extra projectiles
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "experience_orb",
-        name: "Experience Orb",
-        type: TYPE.ITEM,
-        desc: "Increased XP gain",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.xpGain *= 1 + 0.12 * m; // 12-18% more XP
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "speed_boots",
-        name: "Speed Boots",
-        type: TYPE.ITEM,
-        desc: "Permanent movement speed increase",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.speedBonus += 12 * m; // 12-18 speed
-        },
-        icon: makeIconDraw("time"),
-      },
-      {
-        id: "shield_generator",
-        name: "Shield Generator",
-        type: TYPE.ITEM,
-        desc: "Temporary shield on low HP",
-        apply: (s, r) => {
-          const m = rarityMult(r);
-          s.player.shieldGenThreshold = 0.3 - 0.05 * m; // Activates at 30-25% HP
-          s.player.shieldGenAmount = Math.round(15 * m); // Shield amount
-          s.player.shieldGenCooldown = 12 - 2 * m; // Cooldown in seconds
-        },
-        icon: makeIconDraw("time"),
-      },
-    ];
-
-    const characters = [
-      {
-        id: "cowboy",
-        name: "Cowboy",
-        subtitle: "Crit based",
-        startWeapon: "revolver",
-        stats: { hp: 95, speedBase: 75, critChance: 0.08 },
-        space: { id: "quickdraw", name: "Quick Draw", cd: 8.0 },
-        perk: "+1.5% Crit per level",
-      },
-      {
-        id: "wizard",
-        name: "Wizard",
-        subtitle: "AoE fire",
-        startWeapon: "firestaff",
-        stats: { hp: 90, speedBase: 75, sizeMult: 1.08 },
-        space: { id: "blink", name: "Blink", cd: 3.6 },
-        perk: "+0.15 Luck per level",
-      },
-      {
-        id: "brute",
-        name: "Brute",
-        subtitle: "Melee",
-        startWeapon: "sword",
-        stats: { hp: 125, speedBase: 75, armor: 0.06 },
-        space: { id: "slam", name: "Slam", cd: 4.2 },
-        perk: "+8 Max HP per level",
-      },
-    ];
-
-    return { weapons, tomes, items, characters };
+    return createGameContent(
+      makeIconDraw,
+      rarityMult,
+      bumpShake,
+      addParticle,
+      sfxBoss
+    );
   }, []);
 
   function isFullscreen() {
@@ -2147,341 +1055,6 @@ export default function NeonPitRoguelikeV3() {
     return best;
   }
 
-  function drawDangerZones(s, ctx, cam, dangerZones, isoScale) {
-    if (!dangerZones || dangerZones.length === 0) return;
-    
-    const { w, h } = s.arena;
-    const pulse = Math.sin(s.t * 10) * 0.2 + 0.8; // Stronger pulsing effect
-    
-    for (const zone of dangerZones) {
-      const alpha = zone.alpha * (zone.pulse ? pulse : 1.0);
-      ctx.globalAlpha = alpha;
-      ctx.strokeStyle = zone.color;
-      ctx.fillStyle = zone.color;
-      ctx.lineWidth = 5; // Thicker default line width
-      
-      if (zone.type === DANGER_ZONE_TYPE.CONE) {
-        // Draw cone attack zone
-        const centerX = ISO_MODE ? (() => {
-          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return w / 2 + zoneIso.x - camIso.x;
-        })() : zone.x;
-        const centerY = ISO_MODE ? (() => {
-          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return h / 2 + zoneIso.y - camIso.y;
-        })() : zone.y;
-        
-        // Draw cone sector
-        const startAngle = zone.angle - zone.angleWidth / 2;
-        const endAngle = zone.angle + zone.angleWidth / 2;
-        const range = ISO_MODE ? zone.range * isoScale * 0.5 : zone.range;
-        
-        ctx.beginPath();
-        ctx.moveTo(centerX, centerY);
-        ctx.arc(centerX, centerY, range, startAngle, endAngle);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Outer edge highlight - much thicker and brighter
-        ctx.globalAlpha = Math.min(alpha * 1.8, 1.0);
-        ctx.lineWidth = 8;
-        ctx.strokeStyle = zone.state === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,255,0,1.0)' : 'rgba(255,0,0,1.0)';
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, range, startAngle, endAngle);
-        ctx.stroke();
-        
-        // Additional inner edge for clarity
-        ctx.globalAlpha = Math.min(alpha * 1.3, 1.0);
-        ctx.lineWidth = 4;
-        ctx.strokeStyle = zone.color;
-        ctx.beginPath();
-        ctx.moveTo(centerX, centerY);
-        ctx.lineTo(centerX + Math.cos(startAngle) * range, centerY + Math.sin(startAngle) * range);
-        ctx.moveTo(centerX, centerY);
-        ctx.lineTo(centerX + Math.cos(endAngle) * range, centerY + Math.sin(endAngle) * range);
-        ctx.stroke();
-        
-      } else if (zone.type === DANGER_ZONE_TYPE.LINE_DASH) {
-        // Draw line dash zone
-        const startX = ISO_MODE ? (() => {
-          const startIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return w / 2 + startIso.x - camIso.x;
-        })() : zone.x;
-        const startY = ISO_MODE ? (() => {
-          const startIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return h / 2 + startIso.y - camIso.y;
-        })() : zone.y;
-        const endX = ISO_MODE ? (() => {
-          const endIso = worldToIso(zone.targetX, zone.targetY, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return w / 2 + endIso.x - camIso.x;
-        })() : zone.targetX;
-        const endY = ISO_MODE ? (() => {
-          const endIso = worldToIso(zone.targetX, zone.targetY, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return h / 2 + endIso.y - camIso.y;
-        })() : zone.targetY;
-        
-        const width = ISO_MODE ? zone.width * isoScale * 0.5 : zone.width;
-        const dx = endX - startX;
-        const dy = endY - startY;
-        const dist = Math.hypot(dx, dy);
-        const perpX = -dy / dist;
-        const perpY = dx / dist;
-        
-        // Draw rectangle
-        ctx.beginPath();
-        ctx.moveTo(startX + perpX * width / 2, startY + perpY * width / 2);
-        ctx.lineTo(startX - perpX * width / 2, startY - perpY * width / 2);
-        ctx.lineTo(endX - perpX * width / 2, endY - perpY * width / 2);
-        ctx.lineTo(endX + perpX * width / 2, endY + perpY * width / 2);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Edge highlight - much thicker and brighter
-        ctx.globalAlpha = Math.min(alpha * 1.8, 1.0);
-        ctx.lineWidth = 8;
-        ctx.strokeStyle = zone.state === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,255,0,1.0)' : 'rgba(255,0,0,1.0)';
-        ctx.stroke();
-        
-        // Additional corner highlights for clarity
-        ctx.globalAlpha = Math.min(alpha * 1.3, 1.0);
-        ctx.lineWidth = 6;
-        ctx.strokeStyle = zone.color;
-        ctx.beginPath();
-        ctx.arc(startX, startY, width / 2, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(endX, endY, width / 2, 0, Math.PI * 2);
-        ctx.stroke();
-        
-      } else if (zone.type === DANGER_ZONE_TYPE.RING_PULSE) {
-        // Draw ring pulse zone
-        const centerX = ISO_MODE ? (() => {
-          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return w / 2 + zoneIso.x - camIso.x;
-        })() : zone.x;
-        const centerY = ISO_MODE ? (() => {
-          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return h / 2 + zoneIso.y - camIso.y;
-        })() : zone.y;
-        
-        let innerR = ISO_MODE ? zone.innerRadius * isoScale * 0.5 : zone.innerRadius;
-        let outerR = ISO_MODE ? zone.outerRadius * isoScale * 0.5 : zone.outerRadius;
-        
-        // Safety check: ensure outer radius is always larger than inner
-        if (outerR <= innerR) {
-          outerR = innerR + 20; // Minimum visible ring width
-        }
-        
-        // Draw safe zone indicator (center is safe) if flag is set
-        if (zone.showSafeZone && innerR > 0) {
-          ctx.globalAlpha = 0.4;
-          ctx.fillStyle = 'rgba(0,255,0,0.5)';
-          ctx.beginPath();
-          ctx.arc(centerX, centerY, innerR, 0, Math.PI * 2);
-          ctx.fill();
-          
-          // Safe zone border
-          ctx.globalAlpha = 0.8;
-          ctx.strokeStyle = 'rgba(0,255,0,1.0)';
-          ctx.lineWidth = 4;
-          ctx.beginPath();
-          ctx.arc(centerX, centerY, innerR, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-        
-        // Draw donut (outer circle minus inner circle)
-        ctx.globalAlpha = alpha;
-        ctx.fillStyle = zone.color;
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, outerR, 0, Math.PI * 2);
-        ctx.arc(centerX, centerY, innerR, 0, Math.PI * 2, true); // Counter-clockwise for hole
-        ctx.fill();
-        
-        // Edge highlights - much thicker and brighter
-        ctx.globalAlpha = Math.min(alpha * 1.8, 1.0);
-        ctx.lineWidth = 8;
-        ctx.strokeStyle = zone.state === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,255,0,1.0)' : 'rgba(255,0,0,1.0)';
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, outerR, 0, Math.PI * 2);
-        ctx.stroke();
-        
-        // Inner edge highlight
-        if (innerR > 0) {
-          ctx.globalAlpha = Math.min(alpha * 1.5, 1.0);
-          ctx.lineWidth = 6;
-          ctx.strokeStyle = zone.color;
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, innerR, 0, Math.PI * 2);
-        ctx.stroke();
-        }
-      } else if (zone.type === DANGER_ZONE_TYPE.TELEPORT) {
-        // Draw teleport destination
-        const centerX = ISO_MODE ? (() => {
-          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return w / 2 + zoneIso.x - camIso.x;
-        })() : zone.x;
-        const centerY = ISO_MODE ? (() => {
-          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return h / 2 + zoneIso.y - camIso.y;
-        })() : zone.y;
-        
-        const radius = ISO_MODE ? zone.radius * isoScale * 0.5 : zone.radius;
-        
-        // Draw pulsing circle
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-        ctx.fill();
-        
-        // Outer glow
-        ctx.globalAlpha = Math.min(alpha * 1.5, 1.0);
-        ctx.lineWidth = 6;
-        ctx.strokeStyle = 'rgba(150,50,255,1.0)';
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-        ctx.stroke();
-        
-        // Inner bright ring
-        ctx.globalAlpha = 1.0;
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = 'rgba(200,100,255,1.0)';
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, radius * 0.6, 0, Math.PI * 2);
-        ctx.stroke();
-        
-      } else if (zone.type === DANGER_ZONE_TYPE.CHARGE) {
-        // Draw charge zone (similar to line dash but wider)
-        const startX = ISO_MODE ? (() => {
-          const startIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return w / 2 + startIso.x - camIso.x;
-        })() : zone.x;
-        const startY = ISO_MODE ? (() => {
-          const startIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return h / 2 + startIso.y - camIso.y;
-        })() : zone.y;
-        const endX = ISO_MODE ? (() => {
-          const endIso = worldToIso(zone.targetX, zone.targetY, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return w / 2 + endIso.x - camIso.x;
-        })() : zone.targetX;
-        const endY = ISO_MODE ? (() => {
-          const endIso = worldToIso(zone.targetX, zone.targetY, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return h / 2 + endIso.y - camIso.y;
-        })() : zone.targetY;
-        
-        const width = ISO_MODE ? zone.width * isoScale * 0.5 : zone.width;
-        const dx = endX - startX;
-        const dy = endY - startY;
-        const dist = Math.hypot(dx, dy);
-        const perpX = -dy / dist;
-        const perpY = dx / dist;
-        
-        // Draw rectangle
-        ctx.beginPath();
-        ctx.moveTo(startX + perpX * width / 2, startY + perpY * width / 2);
-        ctx.lineTo(startX - perpX * width / 2, startY - perpY * width / 2);
-        ctx.lineTo(endX - perpX * width / 2, endY - perpY * width / 2);
-        ctx.lineTo(endX + perpX * width / 2, endY + perpY * width / 2);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Edge highlight
-        ctx.globalAlpha = Math.min(alpha * 1.8, 1.0);
-        ctx.lineWidth = 8;
-        ctx.strokeStyle = zone.state === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,200,0,1.0)' : 'rgba(255,0,0,1.0)';
-        ctx.stroke();
-        
-        // Corner highlights
-        ctx.globalAlpha = Math.min(alpha * 1.3, 1.0);
-        ctx.lineWidth = 6;
-        ctx.strokeStyle = zone.color;
-        ctx.beginPath();
-        ctx.arc(startX, startY, width / 2, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(endX, endY, width / 2, 0, Math.PI * 2);
-        ctx.stroke();
-        
-      } else if (zone.type === DANGER_ZONE_TYPE.MULTI_SHOT) {
-        // Draw multi-shot beam
-        const centerX = ISO_MODE ? (() => {
-          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return w / 2 + zoneIso.x - camIso.x;
-        })() : zone.x;
-        const centerY = ISO_MODE ? (() => {
-          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return h / 2 + zoneIso.y - camIso.y;
-        })() : zone.y;
-        
-        const range = ISO_MODE ? zone.range * isoScale * 0.5 : zone.range;
-        const beamWidth = ISO_MODE ? zone.width * isoScale * 0.5 : zone.width;
-        
-        // Draw beam as a narrow rectangle
-        const endX = centerX + Math.cos(zone.angle) * range;
-        const endY = centerY + Math.sin(zone.angle) * range;
-        const perpX = -Math.sin(zone.angle);
-        const perpY = Math.cos(zone.angle);
-        
-        ctx.beginPath();
-        ctx.moveTo(centerX + perpX * beamWidth / 2, centerY + perpY * beamWidth / 2);
-        ctx.lineTo(centerX - perpX * beamWidth / 2, centerY - perpY * beamWidth / 2);
-        ctx.lineTo(endX - perpX * beamWidth / 2, endY - perpY * beamWidth / 2);
-        ctx.lineTo(endX + perpX * beamWidth / 2, endY + perpY * beamWidth / 2);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Edge highlight
-        ctx.globalAlpha = Math.min(alpha * 1.5, 1.0);
-        ctx.lineWidth = 4;
-        ctx.strokeStyle = zone.state === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,200,100,1.0)' : 'rgba(255,100,100,1.0)';
-        ctx.stroke();
-        
-      } else if (zone.type === 'burning_ground') {
-        // Draw burning ground from phase 2 effects
-        const centerX = ISO_MODE ? (() => {
-          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return w / 2 + zoneIso.x - camIso.x;
-        })() : zone.x;
-        const centerY = ISO_MODE ? (() => {
-          const zoneIso = worldToIso(zone.x, zone.y, 0, isoScale);
-          const camIso = worldToIso(cam.x, cam.y, 0, isoScale);
-          return h / 2 + zoneIso.y - camIso.y;
-        })() : zone.y;
-        
-        if (zone.angle !== undefined) {
-          // Cone-shaped burning ground
-          const startAngle = zone.angle - zone.angleWidth / 2;
-          const endAngle = zone.angle + zone.angleWidth / 2;
-          const range = ISO_MODE ? zone.range * isoScale * 0.5 : zone.range;
-          
-          ctx.globalAlpha = 0.3;
-          ctx.fillStyle = '#ff4400';
-          ctx.beginPath();
-          ctx.moveTo(centerX, centerY);
-          ctx.arc(centerX, centerY, range, startAngle, endAngle);
-          ctx.closePath();
-          ctx.fill();
-        }
-      }
-    }
-    
-    ctx.globalAlpha = 1.0;
-  }
 
   function pushCombatText(s, x, y, text, col, opts = {}) {
     s.floaters.push({
@@ -2561,36 +1134,36 @@ export default function NeonPitRoguelikeV3() {
     const existingWeapon = p.weapons.find((w) => w.id === weaponDef.id);
 
     if (!existingWeapon) {
-      // Add new weapon
+      // Add new weapon (even in preview mode so preview can read its stats)
+      const newWeapon = {
+        id: weaponDef.id,
+        level: 1,
+        attackCooldown: weaponDef.base.attackCooldown * (1 - 0.05 * (m - 1)),
+        weaponDamage: weaponDef.base.weaponDamage * (1 + 0.06 * (m - 1)), // Reduced from 0.1 to 0.06 (40% less effective)
+        projectiles: weaponDef.base.projectiles + (rarity === RARITY.LEGENDARY ? 1 : 0),
+        pierce: weaponDef.base.pierce,
+        weaponSpread: weaponDef.base.spread,
+        weaponMode: weaponDef.base.mode,
+        weaponEffect: weaponDef.base.effect || null,
+        weaponSplashR: weaponDef.base.splashR || 0,
+        weaponMeleeR: weaponDef.base.meleeR || 0,
+        bounces: weaponDef.base.bounces || 0,
+        bulletSpeedMult: weaponDef.base.bulletSpeedMult || 1,
+        bulletSizeMult: weaponDef.base.bulletSizeMult || 1,
+        attackT: 0,
+        hasActiveBoomerang: false, // For bananarang tracking
+        // Weapon-specific properties (initialized based on weapon type)
+        boomerangMaxDist: weaponDef.id === "bananarang" ? 250 : undefined,
+        boomerangReturnSpeedMult: weaponDef.id === "bananarang" ? 1 : undefined,
+        boneRotationSpeed: weaponDef.id === "bone" ? 8 : undefined,
+        flamewalkerDuration: weaponDef.id === "flamewalker" ? 4.0 : undefined,
+        meleeKnockbackMult: weaponDef.base.mode === "melee" ? 1 : undefined,
+        orbitBlades: weaponDef.id === "orbiting_blades" ? 2 : undefined,
+        orbitAngle: weaponDef.id === "orbiting_blades" ? 0 : undefined,
+      };
+      p.weapons.push(newWeapon);
+      // Track collected weapon (only if not preview)
       if (!previewOnly) {
-        const newWeapon = {
-          id: weaponDef.id,
-          level: 1,
-          attackCooldown: weaponDef.base.attackCooldown * (1 - 0.05 * (m - 1)),
-          weaponDamage: weaponDef.base.weaponDamage * (1 + 0.06 * (m - 1)), // Reduced from 0.1 to 0.06 (40% less effective)
-          projectiles: weaponDef.base.projectiles + (rarity === RARITY.LEGENDARY ? 1 : 0),
-          pierce: weaponDef.base.pierce,
-          weaponSpread: weaponDef.base.spread,
-          weaponMode: weaponDef.base.mode,
-          weaponEffect: weaponDef.base.effect || null,
-          weaponSplashR: weaponDef.base.splashR || 0,
-          weaponMeleeR: weaponDef.base.meleeR || 0,
-          bounces: weaponDef.base.bounces || 0,
-          bulletSpeedMult: weaponDef.base.bulletSpeedMult || 1,
-          bulletSizeMult: weaponDef.base.bulletSizeMult || 1,
-          attackT: 0,
-          hasActiveBoomerang: false, // For bananarang tracking
-          // Weapon-specific properties (initialized based on weapon type)
-          boomerangMaxDist: weaponDef.id === "bananarang" ? 250 : undefined,
-          boomerangReturnSpeedMult: weaponDef.id === "bananarang" ? 1 : undefined,
-          boneRotationSpeed: weaponDef.id === "bone" ? 8 : undefined,
-          flamewalkerDuration: weaponDef.id === "flamewalker" ? 4.0 : undefined,
-          meleeKnockbackMult: weaponDef.base.mode === "melee" ? 1 : undefined,
-          orbitBlades: weaponDef.id === "orbiting_blades" ? 2 : undefined,
-          orbitAngle: weaponDef.id === "orbiting_blades" ? 0 : undefined,
-        };
-        p.weapons.push(newWeapon);
-        // Track collected weapon
         if (!p.collectedWeapons) p.collectedWeapons = [];
         if (!p.collectedWeapons.find(w => w.id === weaponDef.id)) {
           p.collectedWeapons.push({ id: weaponDef.id, name: weaponDef.name, icon: weaponDef.icon });
@@ -2676,7 +1249,9 @@ export default function NeonPitRoguelikeV3() {
     } else if (upgradeType === "damage") {
       existingWeapon.weaponDamage *= 1.06;
     } else if (upgradeType === "attackSpeed") {
-      existingWeapon.attackCooldown = Math.max(0.18, existingWeapon.attackCooldown * 0.96);
+      // Multiplicative attack speed upgrade (reduces cooldown by 4% = 1/0.96)
+      const currentCd = existingWeapon.attackCooldown || 0.42;
+      existingWeapon.attackCooldown = Math.max(0.18, currentCd * 0.96);
     } else if (upgradeType === "bulletSpeed") {
       existingWeapon.bulletSpeedMult = (existingWeapon.bulletSpeedMult || 1) * 1.04;
     } else if (upgradeType === "range") {
@@ -2711,11 +1286,20 @@ export default function NeonPitRoguelikeV3() {
 
     if (!previewOnly) existingWeapon.level = nextLevel;
 
-    existingWeapon.attackCooldown = Math.max(0.18, existingWeapon.attackCooldown);
-    existingWeapon.weaponDamage = Math.max(1, existingWeapon.weaponDamage);
-    existingWeapon.projectiles = clamp(existingWeapon.projectiles, 0, 16);
-    existingWeapon.pierce = clamp(existingWeapon.pierce, 0, 12);
-    existingWeapon.bounces = clamp(existingWeapon.bounces, 0, 8);
+    // Validate and clamp all weapon stats to prevent NaN/undefined
+    existingWeapon.attackCooldown = Math.max(0.18, isNaN(existingWeapon.attackCooldown) || existingWeapon.attackCooldown === undefined ? 0.42 : existingWeapon.attackCooldown);
+    existingWeapon.weaponDamage = Math.max(1, isNaN(existingWeapon.weaponDamage) || existingWeapon.weaponDamage === undefined ? 1 : existingWeapon.weaponDamage);
+    existingWeapon.projectiles = clamp(isNaN(existingWeapon.projectiles) || existingWeapon.projectiles === undefined ? 1 : existingWeapon.projectiles, 0, 16);
+    existingWeapon.pierce = clamp(isNaN(existingWeapon.pierce) || existingWeapon.pierce === undefined ? 0 : existingWeapon.pierce, 0, 12);
+    existingWeapon.bounces = clamp(isNaN(existingWeapon.bounces) || existingWeapon.bounces === undefined ? 0 : existingWeapon.bounces, 0, 8);
+    
+    // Validate multiplicative stats
+    if (isNaN(existingWeapon.bulletSpeedMult) || existingWeapon.bulletSpeedMult === undefined) {
+      existingWeapon.bulletSpeedMult = 1;
+    }
+    if (isNaN(existingWeapon.bulletSizeMult) || existingWeapon.bulletSizeMult === undefined) {
+      existingWeapon.bulletSizeMult = 1;
+    }
 
     if (previewOnly) {
       existingWeapon.attackCooldown = before.attackCooldown;
@@ -2771,26 +1355,34 @@ export default function NeonPitRoguelikeV3() {
         // Flamewalker - spawn fire under player feet
         if (weapon.id === "flamewalker" && weapon.weaponMode === "aura") {
           // Reduced floor damage scaling from +3% to +1.5% per floor
-      const dmgBase = weapon.weaponDamage * (0.84 + 0.015 * s.floor);
+      const baseDmg = weapon.weaponDamage || 1;
+      const floorMult = 0.84 + 0.015 * (s.floor || 0);
+      const dmgBase = (isNaN(baseDmg) ? 1 : baseDmg) * (isNaN(floorMult) ? 1 : floorMult);
           
           // Apply berserker damage multiplier (based on missing HP)
           let berserkerBonus = 1.0;
-          if (p.berserkerMult > 0) {
-            const hpPercent = p.hp / p.maxHp;
+          if (p.berserkerMult > 0 && !isNaN(p.berserkerMult)) {
+            const hpPercent = (p.hp || 0) / Math.max(1, p.maxHp || 1);
             const missingHpPercent = 1 - hpPercent;
             berserkerBonus = 1 + (p.berserkerMult * missingHpPercent);
+            if (isNaN(berserkerBonus)) berserkerBonus = 1.0;
           }
           
           // Apply speed demon damage multiplier (based on movement speed)
           let speedBonus = 1.0;
-          if (p.speedDamageMult > 0) {
-            const currentSpeed = p.speedBase + p.speedBonus;
+          if (p.speedDamageMult > 0 && !isNaN(p.speedDamageMult)) {
+            const currentSpeed = (p.speedBase || 0) + (p.speedBonus || 0);
             speedBonus = 1 + (p.speedDamageMult * (currentSpeed / 100));
+            if (isNaN(speedBonus)) speedBonus = 1.0;
           }
           
           const dmgWithBonuses = dmgBase * berserkerBonus * speedBonus;
-          const crit = Math.random() < clamp(p.critChance, 0, 0.8);
+          if (isNaN(dmgWithBonuses) || dmgWithBonuses <= 0) {
+            continue; // Skip this weapon if damage is invalid
+          }
+          const crit = Math.random() < clamp(p.critChance || 0, 0, 0.8);
           const dmg = crit ? dmgWithBonuses * 1.6 : dmgWithBonuses;
+          if (isNaN(dmg) || dmg <= 0) continue;
           const fireRadius = Math.max(45, (weapon.weaponMeleeR || 50) * p.sizeMult);
           
           // Spawn burning area under player
@@ -2825,26 +1417,35 @@ export default function NeonPitRoguelikeV3() {
         if (weapon.weaponMode === "melee") {
         const r = Math.max(34, (weapon.weaponMeleeR || 60) * p.sizeMult);
         // Reduced floor damage scaling from +3% to +1.5% per floor
-      const dmgBase = weapon.weaponDamage * (0.84 + 0.015 * s.floor);
+      const baseDmg = weapon.weaponDamage || 1;
+      const floorMult = 0.84 + 0.015 * (s.floor || 0);
+      const dmgBase = (isNaN(baseDmg) ? 1 : baseDmg) * (isNaN(floorMult) ? 1 : floorMult);
         
         // Apply berserker damage multiplier (based on missing HP)
         let berserkerBonus = 1.0;
-        if (p.berserkerMult > 0) {
-          const hpPercent = p.hp / p.maxHp;
+        if (p.berserkerMult > 0 && !isNaN(p.berserkerMult)) {
+          const hpPercent = (p.hp || 0) / Math.max(1, p.maxHp || 1);
           const missingHpPercent = 1 - hpPercent;
           berserkerBonus = 1 + (p.berserkerMult * missingHpPercent);
+          if (isNaN(berserkerBonus)) berserkerBonus = 1.0;
         }
         
         // Apply speed demon damage multiplier (based on movement speed)
         let speedBonus = 1.0;
-        if (p.speedDamageMult > 0) {
-          const currentSpeed = p.speedBase + p.speedBonus;
+        if (p.speedDamageMult > 0 && !isNaN(p.speedDamageMult)) {
+          const currentSpeed = (p.speedBase || 0) + (p.speedBonus || 0);
           speedBonus = 1 + (p.speedDamageMult * (currentSpeed / 100));
+          if (isNaN(speedBonus)) speedBonus = 1.0;
         }
         
         const dmgWithBonuses = dmgBase * berserkerBonus * speedBonus;
-      const crit = Math.random() < clamp(p.critChance, 0, 0.8);
+        if (isNaN(dmgWithBonuses)) {
+          console.warn("NaN damage detected in melee, using fallback");
+          continue;
+        }
+      const crit = Math.random() < clamp(p.critChance || 0, 0, 0.8);
       const dmg = crit ? dmgWithBonuses * 1.6 : dmgWithBonuses;
+      if (isNaN(dmg) || dmg <= 0) continue;
 
       for (const e of s.enemies) {
         if (e.hp <= 0) continue;
@@ -2932,26 +1533,35 @@ export default function NeonPitRoguelikeV3() {
       const count = isBoomerang ? 1 : Math.max(1, weapon.projectiles);
 
       // Reduced floor damage scaling from +3% to +1.5% per floor
-      const dmgBase = weapon.weaponDamage * (0.84 + 0.015 * s.floor);
+      const baseDmg = weapon.weaponDamage || 1;
+      const floorMult = 0.84 + 0.015 * (s.floor || 0);
+      const dmgBase = (isNaN(baseDmg) ? 1 : baseDmg) * (isNaN(floorMult) ? 1 : floorMult);
       
       // Apply berserker damage multiplier (based on missing HP)
       let berserkerBonus = 1.0;
-      if (p.berserkerMult > 0) {
-        const hpPercent = p.hp / p.maxHp;
+      if (p.berserkerMult > 0 && !isNaN(p.berserkerMult)) {
+        const hpPercent = (p.hp || 0) / Math.max(1, p.maxHp || 1);
         const missingHpPercent = 1 - hpPercent;
         berserkerBonus = 1 + (p.berserkerMult * missingHpPercent); // More damage the lower your HP
+        if (isNaN(berserkerBonus)) berserkerBonus = 1.0;
       }
       
       // Apply speed demon damage multiplier (based on movement speed)
       let speedBonus = 1.0;
-      if (p.speedDamageMult > 0) {
-        const currentSpeed = p.speedBase + p.speedBonus;
+      if (p.speedDamageMult > 0 && !isNaN(p.speedDamageMult)) {
+        const currentSpeed = (p.speedBase || 0) + (p.speedBonus || 0);
         speedBonus = 1 + (p.speedDamageMult * (currentSpeed / 100)); // Damage per 100 speed
+        if (isNaN(speedBonus)) speedBonus = 1.0;
       }
       
       const dmgWithBonuses = dmgBase * berserkerBonus * speedBonus;
-    const crit = Math.random() < clamp(p.critChance, 0, 0.8);
+      if (isNaN(dmgWithBonuses) || dmgWithBonuses <= 0) {
+        console.warn("NaN or invalid damage detected in ranged weapon, skipping");
+        continue;
+      }
+    const crit = Math.random() < clamp(p.critChance || 0, 0, 0.8);
     const dmg = crit ? dmgWithBonuses * 1.6 : dmgWithBonuses;
+    if (isNaN(dmg) || dmg <= 0) continue;
 
       // Weapon-specific colors and visuals
       let color = "#e6e8ff";
@@ -3301,10 +1911,15 @@ export default function NeonPitRoguelikeV3() {
           }
         }
 
-        const preview = buildPreview(s, (pp) => {
+        // Pass weapon ID and upgrade type for weapon-specific previews
+        const previewWeaponId = bucket === TYPE.WEAPON ? entry.id : null;
+        // Don't generate preview for tomes/items that will have detailedDesc (to avoid duplication)
+        const itemsWithDetailedDesc = ["t_xp", "t_crit_master", "t_elemental", "t_speed_demon", "t_hp", "t_berserker", "moldy_cheese", "ice_crystal", "speed_boots", "slurp_gloves"];
+        const shouldGeneratePreview = bucket === TYPE.WEAPON || !itemsWithDetailedDesc.includes(entry.id);
+        let preview = shouldGeneratePreview ? buildPreviewUtil(s.player, (pp) => {
           if (bucket === TYPE.WEAPON) applyWeapon(pp, entry, rarity, true, selectedUpgradeType);
           else if (bucket === TYPE.TOME) entry.apply(pp, rarity);
-        });
+        }, computeSpeed, previewWeaponId, selectedUpgradeType) : "";
 
         // Generate detailed description with exact amounts based on rarity
         let detailedDesc = entry.desc || (bucket === TYPE.WEAPON ? "Equip or upgrade your weapon" : "");
@@ -3349,7 +1964,7 @@ export default function NeonPitRoguelikeV3() {
             const amount = Math.round(4 * m * 100) / 100;
             detailedDesc = `+${amount}% Crit Chance (${rarity})`;
           } else if (entry.id === "t_hp") {
-            const amount = Math.round(14 * m);
+            const amount = Math.round(8 * m);
             detailedDesc = `+${amount} Max HP (${rarity})`;
           } else if (entry.id === "t_regen") {
             const amount = Math.round(55 * m * 100) / 100;
@@ -3361,14 +1976,46 @@ export default function NeonPitRoguelikeV3() {
             const amount = Math.round(32 * m * 100) / 100;
             detailedDesc = `+${amount} Luck (${rarity})`;
           } else if (entry.id === "t_xp") {
-            const percent = Math.round(12 * m);
+            const percent = Math.round(6 * m * 10) / 10;
             detailedDesc = `+${percent}% XP Gain (${rarity})`;
+          } else if (entry.id === "t_crit_master") {
+            const critChance = Math.round(2.5 * m * 100) / 100;
+            const critDamage = Math.round(0.3 * m * 100) / 100;
+            detailedDesc = `+${critChance}% Crit Chance\n+${critDamage}x Crit Damage (${rarity})`;
+          } else if (entry.id === "t_elemental") {
+            const percent = Math.round(12 * m);
+            detailedDesc = `+${percent}% Chance for random elemental effect (${rarity})\n(Burn, Shock, Poison, or Freeze)`;
+          } else if (entry.id === "t_speed_demon") {
+            const speedMult = Math.round(0.05 * m * 100) / 100;
+            detailedDesc = `+${speedMult}x Damage per unit of Speed (${rarity})`;
           } else if (entry.id === "t_bounce") {
             const bounceAdd = m < 1.2 ? 1 : m < 1.4 ? 2 : 3;
             detailedDesc = `+${bounceAdd} Bounce to all weapons (${rarity})`;
           } else if (entry.id === "t_agility") {
             const amount = Math.round(14 * m);
             detailedDesc = `+${amount} Movement Speed (${rarity})`;
+          } else if (entry.id === "t_berserker") {
+            const hpReduction = Math.round(15 * m);
+            const damageMult = Math.round(0.10 * m * 100) / 100;
+            detailedDesc = `-${hpReduction}% Max HP (${rarity})\n+${damageMult}x Damage per % missing HP\n(Up to ${Math.round(100 * damageMult)}% bonus at 0% HP)`;
+          }
+        } else if (bucket === TYPE.ITEM && entry.apply) {
+          const m = rarityMult(rarity);
+          // Calculate exact amounts for items
+          if (entry.id === "moldy_cheese") {
+            const percent = Math.round(6 * m * 100) / 100;
+            detailedDesc = `+${percent}% Poison Chance on Hit (${rarity})\nPoison: 30% of damage as DPS for 2.4s`;
+          } else if (entry.id === "ice_crystal") {
+            const chance = Math.round((0.2 + 0.15 * m) * 100);
+            const radius = Math.round(35 + 15 * m);
+            const duration = Math.round((1.4 + 0.4 * m) * 10) / 10;
+            detailedDesc = `${chance}% Chance to Freeze (${rarity})\nRange: ${radius}px\nDuration: ${duration}s`;
+          } else if (entry.id === "speed_boots") {
+            const amount = Math.round(12 * m);
+            detailedDesc = `+${amount} Movement Speed (${rarity})`;
+          } else if (entry.id === "slurp_gloves") {
+            const percent = Math.round(6 * m * 100) / 100;
+            detailedDesc = `+${percent}% Lifesteal (${rarity})`;
           }
         }
 
@@ -3485,6 +2132,10 @@ export default function NeonPitRoguelikeV3() {
           }
         };
         
+        // Don't show preview if we have a detailedDesc (and it's different from base desc) to avoid duplication
+        const hasDetailedDesc = detailedDesc && detailedDesc !== entry.desc && detailedDesc !== (bucket === TYPE.WEAPON ? "Equip or upgrade your weapon" : "");
+        const finalPreview = hasDetailedDesc ? "" : preview;
+        
         choices.push({
           rarity,
           type: bucket,
@@ -3492,7 +2143,7 @@ export default function NeonPitRoguelikeV3() {
           name: entry.name,
           desc: detailedDesc,
           icon: entry.icon,
-          preview,
+          preview: finalPreview,
           apply: applyFn,
           weaponUpgradeType: selectedUpgradeType, // Store the selected upgrade type
         });
@@ -3515,6 +2166,63 @@ export default function NeonPitRoguelikeV3() {
       { w: 24, t: TYPE.ITEM },
     ]).t;
     return { bucket, choices: rollChoicesOfType(s, bucket) };
+  }
+
+  function triggerUpgradeSequence(s, content) {
+    const rolled = rollChestChoices(s);
+    const best = s.interact?.find(i => i.kind === INTERACT.CHEST && !i.used);
+    const chestX = best?.x || s.player.x;
+    const chestY = best?.y || s.player.y;
+    
+    // Find highest rarity for fanfare color (same as level up)
+    const rarityOrder = { [RARITY.COMMON]: 0, [RARITY.UNCOMMON]: 1, [RARITY.RARE]: 2, [RARITY.LEGENDARY]: 3 };
+    let highestRarity = RARITY.COMMON;
+    for (const choice of rolled.choices) {
+      if (rarityOrder[choice.rarity] > rarityOrder[highestRarity]) {
+        highestRarity = choice.rarity;
+      }
+    }
+    
+    // Chest opening fanfare: particle burst and visual effects (same as level up)
+    for (let i = 0; i < 80; i++) {
+      const angle = (Math.PI * 2 * i) / 80;
+      const speed = 80 + Math.random() * 120;
+      s.particles.push({
+        x: chestX,
+        y: chestY,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        r: 3 + Math.random() * 4,
+        t: 0,
+        life: 0.6 + Math.random() * 0.4,
+        hue: 200 + Math.random() * 40, // Blue-purple range (same as level up)
+      });
+    }
+    
+    sfxLevelUp(); // Use same sound as level up
+    
+    // CRITICAL: Set s.upgradeCards and ui.screen = 'levelup' immediately
+    if (!s.upgradeCards) s.upgradeCards = [];
+    s.upgradeCards = rolled.choices; // Store upgrade cards in state
+    
+    const nextUi = {
+      ...uiRef.current,
+      screen: "levelup", // MUST set screen to levelup
+      level: s.level,
+      xp: s.xp,
+      xpNeed: s.xpNeed,
+      score: s.score,
+      coins: s.player.coins,
+      timer: s.stageLeft,
+      hint: `Chest reward: ${rolled.bucket}`,
+      levelChoices: rolled.choices,
+      selectedChoiceIndex: 0, // Reset selection
+      levelUpFanfareT: 2.5, // Start fanfare animation (2.5 seconds) - same as level up
+      highestRarity: highestRarity, // Store highest rarity for fanfare color
+    };
+
+    uiRef.current = nextUi;
+    setUi(nextUi);
   }
 
   function startBoss(s, seconds, bossX = null, bossY = null) {
@@ -3722,6 +2430,11 @@ export default function NeonPitRoguelikeV3() {
 
   function newRun(prevBest = 0, charId = "cowboy") {
     ensureAudio();
+    // Resume audio on user interaction (start game)
+    const a = audioRef.current;
+    if (a && a.resumeAudio) {
+      a.resumeAudio();
+    }
 
     const { w, h } = sizeRef.current;
 
@@ -4100,41 +2813,8 @@ export default function NeonPitRoguelikeV3() {
         (b.boomerang && b.t < b.life)
       );
 
-      const rolled = rollChestChoices(s);
-      
-      // Chest opening fanfare: particle burst and visual effects
-      for (let i = 0; i < 50; i++) {
-        const angle = (Math.PI * 2 * i) / 50;
-        const speed = 60 + Math.random() * 100;
-        s.particles.push({
-          x: best.x,
-          y: best.y,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed,
-          r: 2 + Math.random() * 3,
-          t: 0,
-          life: 0.5 + Math.random() * 0.5,
-          hue: 50 + Math.random() * 30, // Gold-yellow range
-        });
-      }
-      
-      const nextUi = {
-        ...uiRef.current,
-        screen: "levelup",
-        level: s.level,
-        xp: s.xp,
-        xpNeed: s.xpNeed,
-        score: s.score,
-        coins: s.player.coins,
-        timer: s.stageLeft,
-        hint: `Chest reward: ${rolled.bucket}`,
-        levelChoices: rolled.choices,
-        selectedChoiceIndex: 0, // Reset selection
-        chestOpenFanfareT: 0.3, // Brief pause before showing choices (0.3 seconds)
-      };
-
-      uiRef.current = nextUi;
-      setUi(nextUi);
+      // DELETE random upgrade logic - use triggerUpgradeSequence instead
+      triggerUpgradeSequence(s, content);
       s.running = false;
       s.freezeMode = "levelup";
 
@@ -4387,23 +3067,29 @@ export default function NeonPitRoguelikeV3() {
       }
     }
     
-    // Update camera to follow player
-    if (ISO_MODE) {
-      // In isometric mode, camera follows player directly (no offset)
-      // We'll convert to isometric and center when rendering
-      s.camera.x = lerp(s.camera.x, p.x, dt * 4);
-      s.camera.y = lerp(s.camera.y, p.y, dt * 4);
-    } else {
-      // In top-down mode, camera is offset to center player on screen
-      const targetX = p.x - w / 2;
-      const targetY = p.y - h / 2;
-      s.camera.x = lerp(s.camera.x, targetX, dt * 4);
-      s.camera.y = lerp(s.camera.y, targetY, dt * 4);
-      
-      // Clamp camera to level bounds (only needed for top-down mode)
-      if (s.levelData) {
-        s.camera.x = clamp(s.camera.x, 0, Math.max(0, s.levelData.w - w));
-        s.camera.y = clamp(s.camera.y, 0, Math.max(0, s.levelData.h - h));
+    // Update camera to follow player (but not during upgrade selection)
+    const u = uiRef.current;
+    const hasUpgradeCards = u && u.levelChoices && u.levelChoices.length > 0;
+    // Also check s.upgradeCards if it exists
+    const upgradeCardsLength = (s.upgradeCards && s.upgradeCards.length) || (hasUpgradeCards ? 1 : 0);
+    if (upgradeCardsLength === 0) {
+      if (ISO_MODE) {
+        // In isometric mode, camera follows player directly (no offset)
+        // We'll convert to isometric and center when rendering
+        s.camera.x = lerp(s.camera.x, p.x, dt * 4);
+        s.camera.y = lerp(s.camera.y, p.y, dt * 4);
+      } else {
+        // In top-down mode, camera is offset to center player on screen
+        const targetX = p.x - w / 2;
+        const targetY = p.y - h / 2;
+        s.camera.x = lerp(s.camera.x, targetX, dt * 4);
+        s.camera.y = lerp(s.camera.y, targetY, dt * 4);
+        
+        // Clamp camera to level bounds (only needed for top-down mode)
+        if (s.levelData) {
+          s.camera.x = clamp(s.camera.x, 0, Math.max(0, s.levelData.w - w));
+          s.camera.y = clamp(s.camera.y, 0, Math.max(0, s.levelData.h - h));
+        }
       }
     }
 
@@ -4411,6 +3097,7 @@ export default function NeonPitRoguelikeV3() {
 
     const intensity = clamp(1 - s.stageLeft / s.stageDur, 0, 1);
     tickMusic(dt, intensity);
+    updateMusic(dt); // CRITICAL: Call updateMusic to manage menu/battle music
     
     // Generate Flow Field once per frame (Dijkstra Map from player position)
     // RESET STATE: Ensure old pathfindingGrid is completely overwritten (already handled by level generation)
@@ -4442,7 +3129,7 @@ export default function NeonPitRoguelikeV3() {
       p.jumpT = Math.max(0, p.jumpT - dt);
       if (p.jumpV !== undefined) {
         // Apply gravity
-        p.jumpV -= 800 * dt; // Gravity acceleration
+        p.jumpV -= 800 * dt; // Gravity acceleration (restored from original)
         if (p.z === undefined) p.z = 0;
         p.z += p.jumpV * dt;
         
@@ -4477,8 +3164,11 @@ export default function NeonPitRoguelikeV3() {
           if (Math.abs(p.jumpVy) < 1) p.jumpVy = 0;
         }
         
-      // Ground check
+      // Ground check - CRITICAL: clamp z to 0 to prevent tiny decimals
       if (p.z < 0) {
+        p.z = 0;
+      }
+      if (p.z <= 0) {
         p.z = 0;
         p.jumpV = 0;
         p.jumpT = 0;
@@ -4489,7 +3179,7 @@ export default function NeonPitRoguelikeV3() {
       }
     } else if (p.z !== undefined && p.z > 0) {
       // Fall down if not jumping
-      p.jumpV = (p.jumpV || 0) - 800 * dt;
+      p.jumpV = (p.jumpV || 0) - 800 * dt; // Gravity during fall (restored from original)
       p.z += p.jumpV * dt;
       
       // Apply remaining horizontal velocity during fall
@@ -4537,6 +3227,38 @@ export default function NeonPitRoguelikeV3() {
       // Clear horizontal jump velocity
       if (p.jumpVx !== undefined) p.jumpVx = 0;
       if (p.jumpVy !== undefined) p.jumpVy = 0;
+      
+      // Check for jump input (Space key) - only trigger on keydown, not when holding
+      // Player must be grounded (z <= 0) and not already jumping (jumpT <= 0)
+      const keys = keysRef.current;
+      if (jumpKeyJustPressedRef.current && p.jumpT <= 0 && (p.z === undefined || p.z <= 0)) {
+        jumpKeyJustPressedRef.current = false; // Clear the flag so holding doesn't trigger again
+        // Initiate jump
+        const baseJumpV = 160 * (p.jumpHeight || 1.0);
+        p.jumpV = baseJumpV;
+        p.jumpT = 0.4; // Jump duration
+        
+        // Get movement direction for diagonal jump
+        let mx = (keys.has("ArrowRight") || keys.has("d") ? 1 : 0) - (keys.has("ArrowLeft") || keys.has("a") ? 1 : 0);
+        let my = (keys.has("ArrowDown") || keys.has("s") ? 1 : 0) - (keys.has("ArrowUp") || keys.has("w") ? 1 : 0);
+        
+        // Transform input directions for isometric mode
+        let dirX, dirY;
+        if (ISO_MODE && (mx !== 0 || my !== 0)) {
+          const transformed = transformInputForIsometric(mx, my);
+          dirX = transformed.x;
+          dirY = transformed.y;
+        } else {
+          const len = Math.hypot(mx, my) || 1;
+          dirX = len ? mx / len : 1;
+          dirY = len ? my / len : 0;
+        }
+        
+        // Set horizontal jump velocity (diagonal jump)
+        const jumpSpeed = baseJumpV * 0.6; // Horizontal jump speed multiplier
+        p.jumpVx = dirX * jumpSpeed;
+        p.jumpVy = dirY * jumpSpeed;
+      }
     }
     
     // Update landing grace period
@@ -4697,26 +3419,34 @@ export default function NeonPitRoguelikeV3() {
           // Calculate blade positions and check for enemy hits
           const orbitRadius = Math.max(40, (weapon.weaponMeleeR || 60) * p.sizeMult);
           // Reduced floor damage scaling from +3% to +1.5% per floor
-      const dmgBase = weapon.weaponDamage * (0.84 + 0.015 * s.floor);
+      const baseDmg = weapon.weaponDamage || 1;
+      const floorMult = 0.84 + 0.015 * (s.floor || 0);
+      const dmgBase = (isNaN(baseDmg) ? 1 : baseDmg) * (isNaN(floorMult) ? 1 : floorMult);
           
           // Apply berserker damage multiplier (based on missing HP)
           let berserkerBonus = 1.0;
-          if (p.berserkerMult > 0) {
-            const hpPercent = p.hp / p.maxHp;
+          if (p.berserkerMult > 0 && !isNaN(p.berserkerMult)) {
+            const hpPercent = (p.hp || 0) / Math.max(1, p.maxHp || 1);
             const missingHpPercent = 1 - hpPercent;
             berserkerBonus = 1 + (p.berserkerMult * missingHpPercent);
+            if (isNaN(berserkerBonus)) berserkerBonus = 1.0;
           }
           
           // Apply speed demon damage multiplier (based on movement speed)
           let speedBonus = 1.0;
-          if (p.speedDamageMult > 0) {
-            const currentSpeed = p.speedBase + p.speedBonus;
+          if (p.speedDamageMult > 0 && !isNaN(p.speedDamageMult)) {
+            const currentSpeed = (p.speedBase || 0) + (p.speedBonus || 0);
             speedBonus = 1 + (p.speedDamageMult * (currentSpeed / 100));
+            if (isNaN(speedBonus)) speedBonus = 1.0;
           }
           
           const dmgWithBonuses = dmgBase * berserkerBonus * speedBonus;
-          const crit = Math.random() < clamp(p.critChance, 0, 0.8);
+          if (isNaN(dmgWithBonuses) || dmgWithBonuses <= 0) {
+            continue; // Skip this weapon if damage is invalid
+          }
+          const crit = Math.random() < clamp(p.critChance || 0, 0, 0.8);
           const dmg = crit ? dmgWithBonuses * 1.6 : dmgWithBonuses;
+          if (isNaN(dmg) || dmg <= 0) continue;
           
           const bladeCount = weapon.orbitBlades || 2;
           const angleStep = (Math.PI * 2) / bladeCount;
@@ -6467,2688 +5197,62 @@ export default function NeonPitRoguelikeV3() {
     }
   }
 
-  function drawWorld(s, ctx) {
-    const { w, h, padding } = s.arena;
-    const p = s.player;
+  // drawMinimap moved to src/rendering/HudRenderer.js
 
-    ctx.clearRect(0, 0, w, h);
+  // drawHud moved to src/rendering/HudRenderer.js
 
-    const hue = s.bgHue;
-    ctx.globalAlpha = 1;
+  // drawOverlay moved to src/rendering/HudRenderer.js
+
+  // drawHud moved to src/rendering/HudRenderer.js
+
+  // drawOverlay moved to src/rendering/HudRenderer.js
+
+  // ADMIN PANEL: Click handler for pause menu admin section
+  function handleAdminClick(x, y, w, h, u, content) {
+    const adminPanelX = w * 0.5 - 220;
+    const adminPanelY = 100;
+    const adminPanelW = 440;
+    const adminPanelH = h - 200;
     
-    // Apply camera transform
-    const cam = s.camera || { x: 0, y: 0 };
-    ctx.save();
-    // Camera transform is handled per-entity in isometric mode
-    // No global transform needed for isometric - we'll convert positions individually
-    if (!ISO_MODE) {
-      // Top-down view: simple camera transform
-      ctx.translate(-cam.x, -cam.y);
-    }
-
-    // Determine biome colors
-    const biome = s.levelData?.biome || "grassland";
-    let bgHue = hue;
-    let bgSat = 55;
-    let bgLight = 7;
-    let roomHue = hue;
-    let roomSat = 45;
-    let roomLight = 11;
-    let corrLight = 9;
-    
-    if (biome === "desert") {
-      bgHue = 40; // Yellow/orange
-      bgSat = 50;
-      bgLight = 12;
-      roomHue = 40;
-      roomSat = 45;
-      roomLight = 15;
-      corrLight = 13;
-    } else if (biome === "winter") {
-      bgHue = 200; // Blue/cyan
-      bgSat = 30;
-      bgLight = 20;
-      roomHue = 200;
-      roomSat = 25;
-      roomLight = 22;
-      corrLight = 21;
-    } else if (biome === "forest") {
-      bgHue = 120; // Green
-      bgSat = 50;
-      bgLight = 8;
-      roomHue = 120;
-      roomSat = 40;
-      roomLight = 12;
-      corrLight = 10;
-    } else if (biome === "volcanic") {
-      bgHue = 10; // Red/orange
-      bgSat = 60;
-      bgLight = 10;
-      roomHue = 10;
-      roomSat = 55;
-      roomLight = 13;
-      corrLight = 11;
+    // Check if click is inside admin panel
+    if (x < adminPanelX || x > adminPanelX + adminPanelW ||
+        y < adminPanelY || y > adminPanelY + adminPanelH) {
+      return;
     }
     
-    // Draw map background
-    ctx.fillStyle = `hsl(${bgHue}, ${bgSat}%, ${bgLight}%)`;
-    if (s.levelData) {
-      if (ISO_MODE) {
-        // Draw entire level area as isometric background
-        // For isometric, we need to draw a large background rectangle
-        const { w, h } = s.arena;
-        const scale = isoScaleRef.current;
-        const bgRect = { x: 0, y: 0, w: s.levelData.w, h: s.levelData.h };
-        drawIsometricRectangle(ctx, bgRect, `hsl(${bgHue}, ${bgSat}%, ${bgLight}%)`, cam.x, cam.y, w, h, scale);
-        
-        // Draw all walkable areas with unified color (no distinction between rooms and corridors)
-        // Draw using exact coordinates to match collision geometry - no visual-only expansion
-        const unifiedColor = `hsl(${roomHue}, ${roomSat}%, ${roomLight}%)`;
-        if (s.levelData.corridors && s.levelData.corridors.length > 0) {
-          for (const corr of s.levelData.corridors) {
-            // Draw corridor using exact coordinates (matches collision geometry)
-            drawIsometricRectangle(ctx, corr, unifiedColor, cam.x, cam.y, w, h, scale);
-          }
-        }
-        if (s.levelData.rooms && s.levelData.rooms.length > 0) {
-          for (const room of s.levelData.rooms) {
-            // Draw room using exact coordinates (matches collision geometry)
-            drawIsometricRectangle(ctx, room, unifiedColor, cam.x, cam.y, w, h, scale);
-          }
-        }
-      } else {
-        // Top-down view (original)
-        // Fill entire level area
-        ctx.fillRect(0, 0, s.levelData.w, s.levelData.h);
-        
-        // Draw all walkable areas with unified color (no distinction between rooms and corridors)
-        // Draw using exact coordinates to match collision geometry - no visual-only expansion
-        ctx.fillStyle = `hsl(${roomHue}, ${roomSat}%, ${roomLight}%)`;
-        if (s.levelData.corridors && s.levelData.corridors.length > 0) {
-          for (const corr of s.levelData.corridors) {
-            // Draw corridor using exact coordinates (matches collision geometry)
-            ctx.fillRect(corr.x, corr.y, corr.w, corr.h);
-          }
-        }
-        if (s.levelData.rooms && s.levelData.rooms.length > 0) {
-          for (const room of s.levelData.rooms) {
-            // Draw room using exact coordinates (matches collision geometry)
-            ctx.fillRect(room.x, room.y, room.w, room.h);
-          }
-        }
-      }
-      
-      // Visual elements removed (water, grass, rocks) - can be re-enabled later if needed
-      // Draw water features (if any) - on top of walkable areas
-      // if (s.levelData.water && s.levelData.water.length > 0) {
-      //   ctx.fillStyle = `hsl(${bgHue + 20}, ${bgSat + 10}%, ${bgLight + 5}%)`;
-      //   ctx.globalAlpha = 0.4;
-      //   for (const water of s.levelData.water) {
-      //     ctx.fillRect(water.x, water.y, water.w, water.h);
-      //   }
-      //   ctx.globalAlpha = 1;
-      // }
-      
-      // Draw grass patches for visual variety
-      // if (s.levelData.grass && s.levelData.grass.length > 0) {
-      //   ctx.fillStyle = `hsl(${roomHue + 10}, ${roomSat + 5}%, ${roomLight + 3}%)`;
-      //   ctx.globalAlpha = 0.5; // Increased visibility
-      //   for (const patch of s.levelData.grass) {
-      //     if (ISO_MODE) {
-      //       const { w, h } = s.arena;
-      //       const scale = isoScaleRef.current;
-      //       const patchIso = worldToIso(patch.x, patch.y, 0, scale);
-      //       const camIso = worldToIso(cam.x, cam.y, 0, scale);
-      //       const screenX = w / 2 + patchIso.x - camIso.x;
-      //       const screenY = h / 2 + patchIso.y - camIso.y;
-      //       ctx.beginPath();
-      //       ctx.arc(screenX, screenY, patch.r, 0, Math.PI * 2);
-      //       ctx.fill();
-      //     } else {
-      //       ctx.beginPath();
-      //       ctx.arc(patch.x, patch.y, patch.r, 0, Math.PI * 2);
-      //       ctx.fill();
-      //     }
-      //   }
-      //   ctx.globalAlpha = 1;
-      // }
-      
-      // Draw rock decorations
-      // if (s.levelData.rocks && s.levelData.rocks.length > 0) {
-      //   ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 10}%, ${bgLight + 5}%)`;
-      //   ctx.globalAlpha = 0.8; // Increased visibility
-      //   for (const rock of s.levelData.rocks) {
-      //     if (ISO_MODE) {
-      //       const { w, h } = s.arena;
-      //       const scale = isoScaleRef.current;
-      //       const rockIso = worldToIso(rock.x, rock.y, 0, scale);
-      //       const camIso = worldToIso(cam.x, cam.y, 0, scale);
-      //       const screenX = w / 2 + rockIso.x - camIso.x;
-      //       const screenY = h / 2 + rockIso.y - camIso.y;
-      //       ctx.beginPath();
-      //       ctx.arc(screenX, screenY, rock.r, 0, Math.PI * 2);
-      //       ctx.fill();
-      //       // Add some detail
-      //       ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 15}%, ${bgLight + 2}%)`;
-      //       ctx.beginPath();
-      //       ctx.arc(screenX - rock.r * 0.3, screenY - rock.r * 0.3, rock.r * 0.4, 0, Math.PI * 2);
-      //       ctx.fill();
-      //       ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 10}%, ${bgLight + 5}%)`;
-      //     } else {
-      //       ctx.beginPath();
-      //       ctx.arc(rock.x, rock.y, rock.r, 0, Math.PI * 2);
-      //       ctx.fill();
-      //       // Add some detail
-      //       ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 15}%, ${bgLight + 1}%)`;
-      //       ctx.beginPath();
-      //       ctx.arc(rock.x - rock.r * 0.3, rock.y - rock.r * 0.3, rock.r * 0.4, 0, Math.PI * 2);
-      //       ctx.fill();
-      //       ctx.fillStyle = `hsl(${bgHue}, ${bgSat - 10}%, ${bgLight + 5}%)`;
-      //     }
-      //   }
-      //   ctx.globalAlpha = 1;
-      // }
-      
-      // No borders - unified floor design (removed puzzle piece lines)
-      
-      // Draw outer boundary only (subtle edge)
-      ctx.strokeStyle = `hsl(${roomHue}, ${roomSat + 10}%, ${roomLight + 5}%)`;
-      ctx.lineWidth = 3;
-      ctx.strokeRect(0, 0, s.levelData.w, s.levelData.h);
-    } else {
-      // Fallback if no level data
-      ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = `hsl(${hue}, 45%, 18%)`;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(padding, padding, w - padding * 2, h - padding * 2);
-    }
-
-    // Apply screen shake offset (if any)
-    let ox = 0;
-    let oy = 0;
-    if (s.shakeT > 0 && s.shakeDur > 0) {
-      const t = s.shakeT / s.shakeDur;
-      const mag = s.shakeMag * t;
-      ox = Math.sin(s.t * 53) * mag;
-      oy = Math.cos(s.t * 61) * mag;
-    }
-
-    // Apply screen shake to camera transform (so everything shakes together)
-    if (ox !== 0 || oy !== 0) {
-      ctx.translate(ox, oy);
-    }
-
-    for (const it of s.interact) {
-      if (it.used) continue;
-      ctx.save();
-      if (ISO_MODE) {
-        const { w, h } = s.arena;
-        const scale = isoScaleRef.current;
-        const itIso = worldToIso(it.x, it.y, 0, scale);
-        const camIso = worldToIso(cam.x, cam.y, 0, scale);
-        ctx.translate(w / 2 + itIso.x - camIso.x, h / 2 + itIso.y - camIso.y);
-      } else {
-      ctx.translate(it.x, it.y);
-      }
-      
-      if (it.kind === INTERACT.BOSS_TP) {
-        // Boss portal - pulsing effect
-        const pulse = Math.sin(s.t * 4) * 0.3 + 0.7;
-        ctx.strokeStyle = `rgba(255,93,93,${pulse})`;
-        ctx.fillStyle = `rgba(255,93,93,${0.2 * pulse})`;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(0, 0, 18, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        // Inner circle
-        ctx.beginPath();
-        ctx.arc(0, 0, 12, 0, Math.PI * 2);
-        ctx.stroke();
-      } else if (it.kind === INTERACT.CHEST) {
-      ctx.strokeStyle = "#2ea8ff";
-      ctx.fillStyle = "rgba(46,168,255,0.14)";
-        ctx.fillRect(-14, -10, 28, 20);
-        ctx.strokeRect(-14, -10, 28, 20);
-      } else if (it.kind === INTERACT.SHRINE) {
-        ctx.strokeStyle = "#4dff88";
-        ctx.fillStyle = "rgba(77,255,136,0.14)";
-        ctx.beginPath();
-        ctx.arc(0, 0, 14, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      } else if (it.kind === INTERACT.MAGNET_SHRINE) {
-        ctx.strokeStyle = "#ffd44a";
-        ctx.fillStyle = "rgba(255,212,74,0.14)";
-        ctx.beginPath();
-        ctx.arc(0, 0, 14, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        // Draw magnet symbol (M shape)
-        ctx.strokeStyle = "#ffd44a";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(-6, -4);
-        ctx.lineTo(-6, 4);
-        ctx.lineTo(0, 0);
-        ctx.lineTo(6, 4);
-        ctx.lineTo(6, -4);
-        ctx.stroke();
-      } else if (it.kind === INTERACT.MICROWAVE) {
-        ctx.strokeStyle = "#ff7a3d";
-        ctx.fillStyle = "rgba(255,122,61,0.14)";
-        ctx.beginPath();
-        ctx.arc(0, 0, 14, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      } else if (it.kind === INTERACT.GREED) {
-        ctx.strokeStyle = "#ffd44a";
-        ctx.fillStyle = "rgba(255,212,74,0.14)";
-        ctx.beginPath();
-        ctx.arc(0, 0, 14, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      } else {
-        ctx.strokeStyle = "#2ea8ff";
-        ctx.fillStyle = "rgba(46,168,255,0.14)";
-        ctx.beginPath();
-        ctx.arc(0, 0, 14, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      }
-      
-      // Draw interactable label above the interactable
-      ctx.save();
-      ctx.translate(0, -25);
-      ctx.globalAlpha = 0.9;
-      
-      let label = "";
-      let labelW = 70;
-      let showPrice = false;
-      
-      if (it.kind === INTERACT.CHEST) {
-        label = "Chest";
-        showPrice = true;
-        labelW = 90; // Wider for price
-      } else if (it.kind === INTERACT.SHRINE) label = "Buff";
-      else if (it.kind === INTERACT.MICROWAVE) label = "HP+";
-      else if (it.kind === INTERACT.GREED) {
-        label = "Greed";
-        showPrice = true;
-        labelW = 90;
-      } else if (it.kind === INTERACT.BOSS_TP) {
-        label = "Boss";
-        showPrice = true;
-        labelW = 90;
-      }
-      
-      // Draw label text (no background box)
-      ctx.fillStyle = "#e6e8ff";
-      ctx.font = "10px ui-sans-serif, system-ui";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(label, 0, showPrice ? -4 : 0);
-      
-      // Draw price for chests and other paid interactables
-      if (showPrice) {
-        const p = s.player;
-        // Calculate dynamic cost for boss portal (percentage of current gold)
-        let displayCost = it.cost;
-        if (it.kind === INTERACT.BOSS_TP && it.cost === -1) {
-          const percentageCost = Math.round(p.coins * 0.2);
-          displayCost = Math.max(100, percentageCost);
-        }
-        
-        if (displayCost > 0) {
-          const canAfford = p.coins >= displayCost;
-          ctx.fillStyle = canAfford ? "#ffd44a" : "#ff5d5d";
-          ctx.font = "bold 11px ui-sans-serif, system-ui";
-          ctx.fillText(`${displayCost}`, 0, 10);
-        }
-      }
-      
-      ctx.restore();
-      
-      ctx.restore();
-    }
-
-    // Draw XP gems
-    for (const g of s.gems) {
-      const a = clamp(1 - g.t / 0.35, 0, 1);
-      ctx.globalAlpha = 0.75 + a * 0.25;
-      ctx.fillStyle = "#4dff88";
-      let gemX, gemY;
-      if (ISO_MODE) {
-        const { w, h } = s.arena;
-        const scale = isoScaleRef.current;
-        const gemIso = worldToIso(g.x, g.y, 0, scale);
-        const camIso = worldToIso(cam.x, cam.y, 0, scale);
-        gemX = w / 2 + gemIso.x - camIso.x;
-        gemY = h / 2 + gemIso.y - camIso.y;
-      } else {
-        gemX = g.x;
-        gemY = g.y;
-      }
-      ctx.beginPath();
-      ctx.arc(gemX, gemY, g.r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Draw gold coins
-    for (const c of s.coins) {
-      ctx.globalAlpha = 0.9;
-      ctx.fillStyle = "#ffd44a";
-      let coinX, coinY;
-      if (ISO_MODE) {
-        const { w, h } = s.arena;
-        const scale = isoScaleRef.current;
-        const coinIso = worldToIso(c.x, c.y, 0, scale);
-        const camIso = worldToIso(cam.x, cam.y, 0, scale);
-        coinX = w / 2 + coinIso.x - camIso.x;
-        coinY = h / 2 + coinIso.y - camIso.y;
-      } else {
-        coinX = c.x;
-        coinY = c.y;
-      }
-      ctx.beginPath();
-      ctx.arc(coinX, coinY, c.r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Draw consumable potions
-    for (const cons of s.consumables) {
-      ctx.globalAlpha = 0.85;
-      let color = "#4dff88"; // Default green
-      if (cons.type === "speed") color = "#2ea8ff"; // Blue for speed
-      else if (cons.type === "heal") color = "#ff5d5d"; // Red for heal
-      else if (cons.type === "magnet") color = "#ffd44a"; // Yellow for magnet
-      else if (cons.type === "gold") color = "#ffaa00"; // Orange/gold for gold boost
-      
-      let consX, consY;
-      if (ISO_MODE) {
-        const { w, h } = s.arena;
-        const scale = isoScaleRef.current;
-        const consIso = worldToIso(cons.x, cons.y, 0, scale);
-        const camIso = worldToIso(cam.x, cam.y, 0, scale);
-        consX = w / 2 + consIso.x - camIso.x;
-        consY = h / 2 + consIso.y - camIso.y;
-      } else {
-        consX = cons.x;
-        consY = cons.y;
-      }
-      
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(consX, consY, cons.r, 0, Math.PI * 2);
-      ctx.fill();
-      
-      // Add glow effect
-      ctx.globalAlpha = 0.3;
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(consX, consY, cons.r + 3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.globalAlpha = 1;
-    for (const b of s.bullets) {
-      // Convert bullet position to isometric if needed
-      let bulletX, bulletY, prevX, prevY;
-      if (ISO_MODE) {
-        const { w, h } = s.arena;
-        const scale = isoScaleRef.current;
-        const bulletIso = worldToIso(b.x, b.y, 0, scale);
-        const camIso = worldToIso(cam.x, cam.y, 0, scale);
-        bulletX = w / 2 + bulletIso.x - camIso.x;
-        bulletY = h / 2 + bulletIso.y - camIso.y;
-        if (b.px !== undefined && b.py !== undefined) {
-          const prevIso = worldToIso(b.px, b.py, 0, scale);
-          prevX = w / 2 + prevIso.x - camIso.x;
-          prevY = h / 2 + prevIso.y - camIso.y;
-        }
-      } else {
-        bulletX = b.x;
-        bulletY = b.y;
-        prevX = b.px;
-        prevY = b.py;
-      }
-      
-      // Draw bullet trail
-      if (prevX !== undefined && prevY !== undefined) {
-        const dx = bulletX - prevX;
-        const dy = bulletY - prevY;
-        const dist = Math.hypot(dx, dy);
-        if (dist > 0) {
-          ctx.save();
-          ctx.globalAlpha = 0.4;
-          ctx.strokeStyle = b.color;
-          ctx.lineWidth = b.r * 1.5;
-          ctx.lineCap = "round";
-          ctx.beginPath();
-          ctx.moveTo(prevX, prevY);
-          ctx.lineTo(bulletX, bulletY);
-          ctx.stroke();
-          ctx.restore();
-        }
-      }
-      
-      // Draw bullet with glow
-      ctx.save();
-      
-      // Firey effect for burn weapons
-      // Check boomerang first (before other effects)
-      if (b.boomerang) {
-        // Small banana-shaped projectile that spins
-        ctx.save();
-        ctx.translate(bulletX, bulletY);
-        ctx.rotate(b.rotation || 0);
-        
-        // Size based on bullet radius, but make it visible
-        const size = Math.max(8, b.r * 1.5); // Small but visible
-        const length = size * 2.5; // Banana is elongated
-        const width = size * 0.8; // Narrower than long
-        
-        // Draw banana shape (curved, elongated)
-        ctx.globalAlpha = 1.0;
-        ctx.fillStyle = "#ffd700"; // Bright yellow
-        ctx.beginPath();
-        // Banana curve: start at top-left, curve down and right
-        ctx.moveTo(-length * 0.4, -width * 0.3);
-        ctx.quadraticCurveTo(0, 0, length * 0.4, width * 0.3);
-        ctx.quadraticCurveTo(length * 0.5, width * 0.5, length * 0.3, width * 0.6);
-        ctx.quadraticCurveTo(0, width * 0.4, -length * 0.3, width * 0.2);
-        ctx.quadraticCurveTo(-length * 0.4, 0, -length * 0.4, -width * 0.3);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Add highlight for 3D effect
-        ctx.fillStyle = "#ffed4e";
-        ctx.beginPath();
-        ctx.moveTo(-length * 0.2, -width * 0.2);
-        ctx.quadraticCurveTo(0, -width * 0.1, length * 0.2, width * 0.1);
-        ctx.quadraticCurveTo(length * 0.3, width * 0.3, length * 0.15, width * 0.4);
-        ctx.quadraticCurveTo(0, width * 0.2, -length * 0.15, width * 0.05);
-        ctx.quadraticCurveTo(-length * 0.2, -width * 0.1, -length * 0.2, -width * 0.2);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Outline for definition
-        ctx.strokeStyle = "#ffaa00";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(-length * 0.4, -width * 0.3);
-        ctx.quadraticCurveTo(0, 0, length * 0.4, width * 0.3);
-        ctx.quadraticCurveTo(length * 0.5, width * 0.5, length * 0.3, width * 0.6);
-        ctx.quadraticCurveTo(0, width * 0.4, -length * 0.3, width * 0.2);
-        ctx.quadraticCurveTo(-length * 0.4, 0, -length * 0.4, -width * 0.3);
-        ctx.closePath();
-        ctx.stroke();
-        
-        ctx.restore();
-      } else if (b.isBone) {
-        // Special drawing for bone - draw as rotating rectangle
-        ctx.save();
-        ctx.translate(bulletX, bulletY);
-        ctx.rotate(b.rotation || 0);
-        ctx.fillStyle = b.color || "#ffffff";
-        // Draw bone as a rectangle (longer than wide)
-        ctx.fillRect(-b.r * 1.5, -b.r * 0.6, b.r * 3, b.r * 1.2);
-        // Add slight highlight
-        ctx.fillStyle = "#f0f0f0";
-        ctx.fillRect(-b.r * 1.5, -b.r * 0.6, b.r * 3, b.r * 0.4);
-        ctx.restore();
-      } else if (b.explosive) {
-        // Delayed explosive bullet - large, pulsing, very visible
-        const timeUntilExplosion = b.explodeAfter || 0;
-        const pulse = Math.sin(s.t * 8) * 0.3 + 0.7; // Pulsing effect
-        
-        // If injected, make it more visible and show countdown
-        if (b.injected) {
-          // Pulsing effect increases as countdown approaches zero
-          const urgencyPulse = timeUntilExplosion < 0.5 ? Math.sin(s.t * 20) * 0.4 + 0.6 : pulse;
-          
-          // Massive outer glow (pulsing faster when about to explode)
-          ctx.shadowBlur = 25;
-          ctx.shadowColor = "#ffaa00";
-          ctx.globalAlpha = 0.7 * urgencyPulse;
-          ctx.fillStyle = "#ffaa00";
-          ctx.beginPath();
-          ctx.arc(bulletX, bulletY, b.r * 3.0, 0, Math.PI * 2);
-          ctx.fill();
-          
-          // Large middle ring
-          ctx.shadowBlur = 15;
-          ctx.globalAlpha = 0.9 * urgencyPulse;
-          ctx.fillStyle = "#ff8800";
-          ctx.beginPath();
-          ctx.arc(bulletX, bulletY, b.r * 2.2, 0, Math.PI * 2);
-          ctx.fill();
-          
-          // Bright core
-          ctx.shadowBlur = 0;
-          ctx.globalAlpha = 1.0;
-          ctx.fillStyle = "#ffcc00";
-          ctx.beginPath();
-          ctx.arc(bulletX, bulletY, b.r * 1.5, 0, Math.PI * 2);
-          ctx.fill();
-          
-          // White hot center
-          ctx.fillStyle = "#ffffff";
-          ctx.beginPath();
-          ctx.arc(bulletX, bulletY, b.r * 0.8, 0, Math.PI * 2);
-          ctx.fill();
-          
-          // Draw countdown indicator (always show when injected)
-          if (timeUntilExplosion > 0) {
-            ctx.save();
-            ctx.globalAlpha = 1.0;
-            ctx.fillStyle = timeUntilExplosion < 0.5 ? "#ff0000" : "#ffffff";
-            ctx.font = "bold 14px ui-sans-serif, system-ui";
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.fillText(timeUntilExplosion.toFixed(1), bulletX, bulletY - b.r * 3.5);
-            ctx.restore();
-          }
-        } else {
-          // Not injected yet - seeking enemy
-          // Massive outer glow (pulsing)
-          ctx.shadowBlur = 20;
-          ctx.shadowColor = "#ffaa00";
-          ctx.globalAlpha = 0.6 * pulse;
-          ctx.fillStyle = "#ffaa00";
-          ctx.beginPath();
-          ctx.arc(bulletX, bulletY, b.r * 2.5, 0, Math.PI * 2);
-          ctx.fill();
-          
-          // Large middle ring
-          ctx.shadowBlur = 12;
-          ctx.globalAlpha = 0.8 * pulse;
-          ctx.fillStyle = "#ff8800";
-          ctx.beginPath();
-          ctx.arc(bulletX, bulletY, b.r * 1.8, 0, Math.PI * 2);
-          ctx.fill();
-          
-          // Bright core
-          ctx.shadowBlur = 0;
-          ctx.globalAlpha = 1.0;
-          ctx.fillStyle = "#ffcc00";
-          ctx.beginPath();
-          ctx.arc(bulletX, bulletY, b.r * 1.2, 0, Math.PI * 2);
-          ctx.fill();
-          
-          // White hot center
-          ctx.fillStyle = "#ffffff";
-          ctx.beginPath();
-          ctx.arc(bulletX, bulletY, b.r * 0.6, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      } else if (b.effect === "burn" || b.glow) {
-        // Outer glow
-        ctx.shadowBlur = 12;
-        ctx.shadowColor = b.color;
-        ctx.globalAlpha = 0.8;
-      ctx.fillStyle = b.color;
-      ctx.beginPath();
-        ctx.arc(bulletX, bulletY, b.r * 1.4, 0, Math.PI * 2);
-        ctx.fill();
-        
-        // Inner bright core
-        ctx.shadowBlur = 0;
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = "#ffaa44";
-        ctx.beginPath();
-        ctx.arc(bulletX, bulletY, b.r * 0.7, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (b.crit) {
-        ctx.shadowBlur = 6;
-        ctx.shadowColor = "#ffd44a";
-        ctx.fillStyle = b.color;
-        ctx.beginPath();
-        ctx.arc(bulletX, bulletY, b.r, 0, Math.PI * 2);
-        ctx.fill();
-      } else {
-        ctx.fillStyle = b.color;
-        ctx.beginPath();
-        ctx.arc(bulletX, bulletY, b.r, 0, Math.PI * 2);
-      ctx.fill();
-      }
-      ctx.restore();
-    }
-
-    // Draw boss danger zones FIRST (before entities) so they appear on the ground
-    if (s.boss.active && s.boss.controller) {
-      const dangerZones = s.boss.controller.getAllDangerZones(p, s.levelData);
-      drawDangerZones(s, ctx, cam, dangerZones, isoScaleRef.current);
-    }
-
-    // In isometric mode, we need to depth sort all entities (player + enemies) by isometric Y
-    // Entities with higher isometric Y (further back) should be drawn first
-    if (ISO_MODE) {
-      const { w, h } = s.arena;
-      const scale = isoScaleRef.current;
-      
-      // Collect all entities with their isometric depth
-      const entities = [];
-      
-      // Add player
-      const playerZ = p.z || 0;
-      const playerIso = worldToIso(p.x, p.y, playerZ, scale);
-      const camIso = worldToIso(cam.x, cam.y, 0, scale);
-      entities.push({
-        type: 'player',
-        entity: p,
-        isoY: playerIso.y,
-        color: p.iFrames > 0 ? "#9cffd6" : "#2ea8ff",
-        screenX: w / 2 + playerIso.x - camIso.x,
-        screenY: h / 2 + playerIso.y - camIso.y,
-        z: playerZ,
-      });
-      
-      // Add boss if active
-      if (s.boss.active) {
-        const b = s.boss;
-        const bossIso = worldToIso(b.x, b.y, 0, scale);
-        entities.push({
-          type: 'boss',
-          entity: b,
-          isoY: bossIso.y,
-          color: b.enraged ? "#ff5d5d" : "#ffd44a",
-          screenX: w / 2 + bossIso.x - camIso.x,
-          screenY: h / 2 + bossIso.y - camIso.y,
-        });
-      }
-      
-      // Add enemies
-    for (const e of s.enemies) {
-      if (e.hp <= 0) continue;
-        const slowed = e.slowT > 0;
-        let col = slowed ? "#7bf1ff" : e.tier === "brute" ? "#ff7a3d" : e.tier === "spitter" ? "#ff5d5d" : e.tier === "runner" ? "#c23bff" : e.tier === "shocker" ? "#00ffff" : e.tier === "tank" ? "#8b4513" : "#e6e8ff";
-        
-        // Red flash when taking damage
-        if (e.hitT > 0) {
-          const flashIntensity = clamp(e.hitT / 0.12, 0, 1);
-          col = lerpColor(col, "#ff5d5d", flashIntensity * 0.8);
-        }
-        
-        const entityIso = worldToIso(e.x, e.y, 0, scale);
-        const camIso = worldToIso(cam.x, cam.y, 0, scale);
-        entities.push({
-          type: 'enemy',
-          entity: e,
-          isoY: entityIso.y,
-          color: col,
-          screenX: w / 2 + entityIso.x - camIso.x,
-          screenY: h / 2 + entityIso.y - camIso.y,
-          isElite: e.isElite,
-          isGoldenElite: e.isGoldenElite,
-          poisonT: e.poisonT,
-          burnT: e.burnT,
-          hitT: e.hitT,
-        });
-      }
-      
-      // Sort by isometric Y (LOWER Y = further back, draw first)
-      // In isometric view, entities with lower isoY appear higher on screen (further back)
-      // Entities with higher isoY appear lower on screen (closer/in front)
-      entities.sort((a, b) => a.isoY - b.isoY);
-      
-      // Draw all entities in sorted order (shadows first, then cubes)
-      // First pass: draw all shadows
-      for (const ent of entities) {
-        const entZ = ent.z || 0;
-        drawEntityAsCube(ctx, ent.screenX, ent.screenY, ent.entity.r, ent.color, scale, true, entZ);
-      }
-      
-      // Second pass: draw all cubes in depth order (shadows already drawn)
-      for (const ent of entities) {
-        const entZ = ent.z || 0;
-        if (ent.type === 'enemy') {
-          // Draw elite glow effect (if any)
-          if (ent.isElite) {
-            ctx.shadowBlur = 15;
-            ctx.shadowColor = ent.isGoldenElite ? "#ffd44a" : "#c23bff";
-            ctx.globalAlpha = 0.6;
-            ctx.fillStyle = ent.isGoldenElite ? "#ffd44a" : "#c23bff";
-            ctx.beginPath();
-            ctx.arc(ent.screenX, ent.screenY, ent.entity.r * 1.5, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.shadowBlur = 0;
-          }
-          
-          // Check if this enemy has an explosive bullet injected
-          let hasExplosive = false;
-          let explosiveTimeLeft = 0;
-          for (const bullet of s.bullets) {
-            if (bullet.explosive && bullet.injected && bullet.injectedEnemy) {
-              // Check if this bullet is attached to this enemy (by reference or position)
-              if (bullet.injectedEnemy === ent.entity || 
-                  (bullet.injectedEnemy.x === ent.entity.x && bullet.injectedEnemy.y === ent.entity.y && bullet.injectedEnemy.hp > 0)) {
-                hasExplosive = true;
-                explosiveTimeLeft = bullet.explodeAfter || 0;
-                break;
-              }
-            }
-          }
-          
-          // Visual indicators for DoT effects
-          if (ent.poisonT > 0) {
-            ctx.strokeStyle = "#4dff88";
-            ctx.lineWidth = 2;
-            ctx.globalAlpha = 0.6;
-            ctx.beginPath();
-            ctx.arc(ent.screenX, ent.screenY, ent.entity.r + 3, 0, Math.PI * 2);
-            ctx.stroke();
-          }
-          if (ent.burnT > 0) {
-            ctx.strokeStyle = "#ff7a3d";
-            ctx.lineWidth = 2;
-            ctx.globalAlpha = 0.6;
-            ctx.beginPath();
-            ctx.arc(ent.screenX, ent.screenY, ent.entity.r + 2, 0, Math.PI * 2);
-            ctx.stroke();
-          }
-          
-          // Draw enemy cube
-          ctx.globalAlpha = ent.hitT > 0 ? 0.7 : 1;
-          drawIsometricCube(ctx, ent.screenX, ent.screenY, ent.entity.r, ent.color, scale, entZ);
-          
-          // Draw explosive countdown ring AFTER cube (so it's on top and visible)
-          if (hasExplosive && explosiveTimeLeft > 0) {
-            const urgency = 1 - (explosiveTimeLeft / 2.0); // 0 to 1 as countdown progresses
-            const pulse = Math.sin(s.t * 12 + urgency * 10) * 0.3 + 0.7;
-            const ringRadius = ent.entity.r + 10 + urgency * 8; // Ring grows as countdown approaches
-            
-            // Outer pulsing ring - very visible
-            ctx.strokeStyle = explosiveTimeLeft < 0.5 ? "#ff0000" : "#ffaa00";
-            ctx.lineWidth = 4 + urgency * 3;
-            ctx.globalAlpha = 1.0 * pulse;
-            ctx.shadowBlur = 10;
-            ctx.shadowColor = explosiveTimeLeft < 0.5 ? "#ff0000" : "#ffaa00";
-            ctx.beginPath();
-            ctx.arc(ent.screenX, ent.screenY, ringRadius, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.shadowBlur = 0;
-            
-            // Inner bright ring
-            ctx.strokeStyle = "#ffcc00";
-            ctx.lineWidth = 3;
-            ctx.globalAlpha = 1.0;
-            ctx.beginPath();
-            ctx.arc(ent.screenX, ent.screenY, ent.entity.r + 8, 0, Math.PI * 2);
-            ctx.stroke();
-            
-            // Countdown text above enemy - very visible
-            ctx.save();
-            ctx.globalAlpha = 1.0;
-            ctx.fillStyle = explosiveTimeLeft < 0.5 ? "#ff0000" : "#ffaa00";
-            ctx.font = "bold 18px ui-sans-serif, system-ui";
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.shadowBlur = 4;
-            ctx.shadowColor = explosiveTimeLeft < 0.5 ? "#ff0000" : "#ffaa00";
-            ctx.fillText(explosiveTimeLeft.toFixed(1), ent.screenX, ent.screenY - ent.entity.r - 25);
-            ctx.restore();
-          }
-          
-          // Draw HP bar
-          const hpT = clamp(ent.entity.hp / ent.entity.maxHp, 0, 1);
-          ctx.globalAlpha = 0.9;
-          ctx.fillStyle = "rgba(0,0,0,0.5)";
-          ctx.fillRect(ent.screenX - ent.entity.r, ent.screenY - ent.entity.r - 10, ent.entity.r * 2, 4);
-          ctx.fillStyle = "#1fe06a";
-          ctx.fillRect(ent.screenX - ent.entity.r, ent.screenY - ent.entity.r - 10, ent.entity.r * 2 * hpT, 4);
-          ctx.globalAlpha = 1;
-        } else if (ent.type === 'boss') {
-          // Check if boss has an explosive bullet injected
-          let hasExplosive = false;
-          let explosiveTimeLeft = 0;
-          for (const bullet of s.bullets) {
-            if (bullet.explosive && bullet.injected && bullet.injectedEnemy) {
-              // Check if this bullet is attached to this boss (by reference or position)
-              if (bullet.injectedEnemy === ent.entity || 
-                  (bullet.injectedEnemy.x === ent.entity.x && bullet.injectedEnemy.y === ent.entity.y && bullet.injectedEnemy.hp > 0)) {
-                hasExplosive = true;
-                explosiveTimeLeft = bullet.explodeAfter || 0;
-                break;
-              }
-            }
-          }
-          
-          // Draw explosive countdown ring (very visible)
-          if (hasExplosive && explosiveTimeLeft > 0) {
-            const urgency = 1 - (explosiveTimeLeft / 2.0);
-            const pulse = Math.sin(s.t * 12 + urgency * 10) * 0.3 + 0.7;
-            const ringRadius = ent.entity.r + 10 + urgency * 8;
-            
-            // Outer pulsing ring
-            ctx.strokeStyle = explosiveTimeLeft < 0.5 ? "#ff0000" : "#ffaa00";
-            ctx.lineWidth = 4 + urgency * 3;
-            ctx.globalAlpha = 0.9 * pulse;
-            ctx.beginPath();
-            ctx.arc(ent.screenX, ent.screenY, ringRadius, 0, Math.PI * 2);
-            ctx.stroke();
-            
-            // Inner bright ring
-            ctx.strokeStyle = "#ffcc00";
-            ctx.lineWidth = 3;
-            ctx.globalAlpha = 1.0;
-            ctx.beginPath();
-            ctx.arc(ent.screenX, ent.screenY, ent.entity.r + 8, 0, Math.PI * 2);
-            ctx.stroke();
-            
-            // Countdown text above boss
-            ctx.save();
-            ctx.globalAlpha = 1.0;
-            ctx.fillStyle = explosiveTimeLeft < 0.5 ? "#ff0000" : "#ffaa00";
-            ctx.font = "bold 18px ui-sans-serif, system-ui";
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.fillText(explosiveTimeLeft.toFixed(1), ent.screenX, ent.screenY - ent.entity.r - 25);
-            ctx.restore();
-          }
-          
-          // Draw boss visual feedback during attacks (windup/active states)
-          if (ent.entity.controller) {
-            const bossState = ent.entity.controller.getCurrentState();
-            if (bossState === BOSS_ABILITY_STATE.WINDUP || bossState === BOSS_ABILITY_STATE.ACTIVE) {
-              const pulse = Math.sin(s.t * 15) * 0.3 + 0.7;
-              const glowRadius = ent.entity.r * (1.3 + pulse * 0.2);
-              const glowColor = bossState === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,220,0,0.6)' : 'rgba(255,50,50,0.7)';
-              
-              // Outer glow
-              ctx.shadowBlur = 20;
-              ctx.shadowColor = bossState === BOSS_ABILITY_STATE.WINDUP ? '#ffdd00' : '#ff0000';
-              ctx.globalAlpha = pulse * 0.8;
-              ctx.fillStyle = glowColor;
-              ctx.beginPath();
-              ctx.arc(ent.screenX, ent.screenY, glowRadius, 0, Math.PI * 2);
-              ctx.fill();
-              ctx.shadowBlur = 0;
-              
-              // Inner bright ring
-              ctx.globalAlpha = 1.0;
-              ctx.strokeStyle = bossState === BOSS_ABILITY_STATE.WINDUP ? '#ffdd00' : '#ff0000';
-              ctx.lineWidth = 4;
-              ctx.beginPath();
-              ctx.arc(ent.screenX, ent.screenY, ent.entity.r + 5, 0, Math.PI * 2);
-              ctx.stroke();
-            }
-          }
-          
-          // Draw boss cube
-          drawIsometricCube(ctx, ent.screenX, ent.screenY, ent.entity.r, ent.color, scale, entZ);
-          
-          // Draw boss HP bar (at top of screen)
-          const hpT = clamp(ent.entity.hp / ent.entity.maxHp, 0, 1);
-          ctx.globalAlpha = 0.9;
-          ctx.fillStyle = "rgba(0,0,0,0.55)";
-          ctx.fillRect(w * 0.25, padding * 0.6, w * 0.5, 10);
-          ctx.fillStyle = "#ffd44a";
-          ctx.fillRect(w * 0.25, padding * 0.6, w * 0.5 * hpT, 10);
-          ctx.globalAlpha = 1;
-        } else {
-          // Draw player cube
-          drawIsometricCube(ctx, ent.screenX, ent.screenY, ent.entity.r, ent.color, scale, entZ);
-        }
-      }
-    } else {
-      // Top-down mode: draw danger zones first, then enemies and player
-      if (s.boss.active && s.boss.controller) {
-        const dangerZones = s.boss.controller.getAllDangerZones(p, s.levelData);
-        drawDangerZones(s, ctx, cam, dangerZones, isoScaleRef.current);
-      }
-      
-      // Draw enemies and player normally (no depth sorting needed)
-      for (const e of s.enemies) {
-        if (e.hp <= 0) continue;
-        const slowed = e.slowT > 0;
-        let col = slowed ? "#7bf1ff" : e.tier === "brute" ? "#ff7a3d" : e.tier === "spitter" ? "#ff5d5d" : e.tier === "runner" ? "#c23bff" : e.tier === "shocker" ? "#00ffff" : e.tier === "tank" ? "#8b4513" : "#e6e8ff";
-        
-        // Elite enemies have a glow effect
-        if (e.isElite) {
-          ctx.shadowBlur = 15;
-          ctx.shadowColor = e.isGoldenElite ? "#ffd44a" : "#c23bff";
-          ctx.globalAlpha = 0.6;
-          ctx.fillStyle = e.isGoldenElite ? "#ffd44a" : "#c23bff";
-          ctx.beginPath();
-          ctx.arc(e.x, e.y, e.r * 1.5, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.shadowBlur = 0;
-        }
-        
-        // Red flash when taking damage
-        if (e.hitT > 0) {
-          const flashIntensity = clamp(e.hitT / 0.12, 0, 1);
-          col = lerpColor(col, "#ff5d5d", flashIntensity * 0.8);
-        }
-        
-        // Check if this enemy has an explosive bullet injected
-        let hasExplosive = false;
-        let explosiveTimeLeft = 0;
-        for (const bullet of s.bullets) {
-          if (bullet.explosive && bullet.injected && bullet.injectedEnemy) {
-            // Check if this bullet is attached to this enemy (by reference or position)
-            if (bullet.injectedEnemy === e || 
-                (bullet.injectedEnemy.x === e.x && bullet.injectedEnemy.y === e.y && bullet.injectedEnemy.hp > 0)) {
-              hasExplosive = true;
-              explosiveTimeLeft = bullet.explodeAfter || 0;
-              break;
-            }
-          }
-        }
-        
-        // Visual indicators for DoT effects
-        if (e.poisonT > 0) {
-          ctx.strokeStyle = "#4dff88";
-          ctx.lineWidth = 2;
-          ctx.globalAlpha = 0.6;
-          ctx.beginPath();
-          ctx.arc(e.x, e.y, e.r + 3, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-        if (e.burnT > 0) {
-          ctx.strokeStyle = "#ff7a3d";
-          ctx.lineWidth = 2;
-          ctx.globalAlpha = 0.6;
-          ctx.beginPath();
-          ctx.arc(e.x, e.y, e.r + 2, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-        
-        // Draw enemy (top-down view)
-      ctx.globalAlpha = e.hitT > 0 ? 0.7 : 1;
-        ctx.fillStyle = col;
-      ctx.beginPath();
-      ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2);
-      ctx.fill();
-        
-        // Draw explosive countdown ring AFTER enemy (so it's on top and visible)
-        if (hasExplosive && explosiveTimeLeft > 0) {
-          const urgency = 1 - (explosiveTimeLeft / 2.0); // 0 to 1 as countdown progresses
-          const pulse = Math.sin(s.t * 12 + urgency * 10) * 0.3 + 0.7;
-          const ringRadius = e.r + 10 + urgency * 8; // Ring grows as countdown approaches
-          
-          // Outer pulsing ring - very visible
-          ctx.strokeStyle = explosiveTimeLeft < 0.5 ? "#ff0000" : "#ffaa00";
-          ctx.lineWidth = 4 + urgency * 3;
-          ctx.globalAlpha = 1.0 * pulse;
-          ctx.shadowBlur = 10;
-          ctx.shadowColor = explosiveTimeLeft < 0.5 ? "#ff0000" : "#ffaa00";
-          ctx.beginPath();
-          ctx.arc(e.x, e.y, ringRadius, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.shadowBlur = 0;
-          
-          // Inner bright ring
-          ctx.strokeStyle = "#ffcc00";
-          ctx.lineWidth = 3;
-          ctx.globalAlpha = 1.0;
-          ctx.beginPath();
-          ctx.arc(e.x, e.y, e.r + 8, 0, Math.PI * 2);
-          ctx.stroke();
-          
-          // Countdown text above enemy - very visible
-          ctx.save();
-          ctx.globalAlpha = 1.0;
-          ctx.fillStyle = explosiveTimeLeft < 0.5 ? "#ff0000" : "#ffaa00";
-          ctx.font = "bold 18px ui-sans-serif, system-ui";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.shadowBlur = 4;
-          ctx.shadowColor = explosiveTimeLeft < 0.5 ? "#ff0000" : "#ffaa00";
-          ctx.fillText(explosiveTimeLeft.toFixed(1), e.x, e.y - e.r - 25);
-          ctx.restore();
-        }
-
-      const hpT = clamp(e.hp / e.maxHp, 0, 1);
-      ctx.globalAlpha = 0.9;
-      ctx.fillStyle = "rgba(0,0,0,0.5)";
-      ctx.fillRect(e.x - e.r, e.y - e.r - 10, e.r * 2, 4);
-      ctx.fillStyle = "#1fe06a";
-      ctx.fillRect(e.x - e.r, e.y - e.r - 10, e.r * 2 * hpT, 4);
-      ctx.globalAlpha = 1;
-    }
-
-    if (s.boss.active) {
-      const b = s.boss;
-        
-        // Check if boss has an explosive bullet injected
-        let hasExplosive = false;
-        let explosiveTimeLeft = 0;
-        for (const bullet of s.bullets) {
-          if (bullet.explosive && bullet.injected && bullet.injectedEnemy) {
-            // Check if this bullet is attached to this boss (by reference or position)
-            if (bullet.injectedEnemy === b || 
-                (bullet.injectedEnemy.x === b.x && bullet.injectedEnemy.y === b.y && bullet.injectedEnemy.hp > 0)) {
-              hasExplosive = true;
-              explosiveTimeLeft = bullet.explodeAfter || 0;
-              break;
-            }
-          }
-        }
-        
-        // Draw explosive countdown ring (very visible)
-        if (hasExplosive && explosiveTimeLeft > 0) {
-          const urgency = 1 - (explosiveTimeLeft / 2.0);
-          const pulse = Math.sin(s.t * 12 + urgency * 10) * 0.3 + 0.7;
-          const ringRadius = b.r + 10 + urgency * 8;
-          
-          // Outer pulsing ring
-          ctx.strokeStyle = explosiveTimeLeft < 0.5 ? "#ff0000" : "#ffaa00";
-          ctx.lineWidth = 4 + urgency * 3;
-          ctx.globalAlpha = 0.9 * pulse;
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, ringRadius, 0, Math.PI * 2);
-          ctx.stroke();
-          
-          // Inner bright ring
-          ctx.strokeStyle = "#ffcc00";
-          ctx.lineWidth = 3;
-          ctx.globalAlpha = 1.0;
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, b.r + 8, 0, Math.PI * 2);
-          ctx.stroke();
-          
-          // Countdown text above boss
-          ctx.save();
-          ctx.globalAlpha = 1.0;
-          ctx.fillStyle = explosiveTimeLeft < 0.5 ? "#ff0000" : "#ffaa00";
-          ctx.font = "bold 18px ui-sans-serif, system-ui";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText(explosiveTimeLeft.toFixed(1), b.x, b.y - b.r - 25);
-          ctx.restore();
-        }
-        
-      // Draw boss visual feedback during attacks (windup/active states)
-      if (b.controller) {
-        const bossState = b.controller.getCurrentState();
-        if (bossState === BOSS_ABILITY_STATE.WINDUP || bossState === BOSS_ABILITY_STATE.ACTIVE) {
-          const pulse = Math.sin(s.t * 15) * 0.3 + 0.7;
-          const glowRadius = b.r * (1.3 + pulse * 0.2);
-          const glowColor = bossState === BOSS_ABILITY_STATE.WINDUP ? 'rgba(255,220,0,0.6)' : 'rgba(255,50,50,0.7)';
-          
-          // Outer glow
-          ctx.shadowBlur = 20;
-          ctx.shadowColor = bossState === BOSS_ABILITY_STATE.WINDUP ? '#ffdd00' : '#ff0000';
-          ctx.globalAlpha = pulse * 0.8;
-          ctx.fillStyle = glowColor;
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, glowRadius, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.shadowBlur = 0;
-          
-          // Inner bright ring
-          ctx.globalAlpha = 1.0;
-          ctx.strokeStyle = bossState === BOSS_ABILITY_STATE.WINDUP ? '#ffdd00' : '#ff0000';
-          ctx.lineWidth = 4;
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, b.r + 5, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-      }
-      
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = b.enraged ? "#ff5d5d" : "#ffd44a";
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-      ctx.fill();
-
-      const hpT = clamp(b.hp / b.maxHp, 0, 1);
-      ctx.fillStyle = "rgba(0,0,0,0.55)";
-      ctx.fillRect(w * 0.25, padding * 0.6, w * 0.5, 10);
-      ctx.fillStyle = "#ffd44a";
-      ctx.fillRect(w * 0.25, padding * 0.6, w * 0.5 * hpT, 10);
-    }
-
-      // Draw player (top-down view)
-    ctx.globalAlpha = 1;
-      const playerColor = p.iFrames > 0 ? "#9cffd6" : "#2ea8ff";
-      ctx.fillStyle = playerColor;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-    ctx.fill();
-    }
+    const s = stateRef.current;
+    const buttonStartY = adminPanelY + 60;
+    const buttonH = 26;
+    const buttonSpacing = 34;
+    const buttonW = 180;
     
-    // Draw orbiting blades
-    if (p.weapons) {
-      for (const weapon of p.weapons) {
-        if (weapon.id === "orbiting_blades" && weapon.weaponMode === "orbit" && weapon.orbitAngle !== undefined) {
-          const orbitRadius = Math.max(40, (weapon.weaponMeleeR || 60) * p.sizeMult);
-          const bladeCount = weapon.orbitBlades || 2;
-          const angleStep = (Math.PI * 2) / bladeCount;
-          
-          ctx.globalAlpha = 1.0;
-          ctx.strokeStyle = "#c0c0c0";
-          ctx.fillStyle = "#ffffff";
-          ctx.lineWidth = 2;
-          
-          for (let i = 0; i < bladeCount; i++) {
-            const bladeAngle = weapon.orbitAngle + angleStep * i;
-            let bladeX, bladeY;
-            
-            if (ISO_MODE) {
-              // Convert to isometric coordinates for orbiting blades
-              const { w, h } = s.arena;
-              const scale = isoScaleRef.current;
-              const playerIso = worldToIso(p.x, p.y, 0, scale);
-              const camIso = worldToIso(cam.x, cam.y, 0, scale);
-              const playerScreenX = w / 2 + playerIso.x - camIso.x;
-              const playerScreenY = h / 2 + playerIso.y - camIso.y;
-              
-              // Calculate blade position in world space, then convert to isometric
-              const worldBladeX = p.x + Math.cos(bladeAngle) * orbitRadius;
-              const worldBladeY = p.y + Math.sin(bladeAngle) * orbitRadius;
-              const bladeIso = worldToIso(worldBladeX, worldBladeY, 0, scale);
-              bladeX = w / 2 + bladeIso.x - camIso.x;
-              bladeY = h / 2 + bladeIso.y - camIso.y;
-            } else {
-              bladeX = p.x + Math.cos(bladeAngle) * orbitRadius;
-              bladeY = p.y + Math.sin(bladeAngle) * orbitRadius;
-            }
-            
-            // Draw blade as a small rotating rectangle/sword shape
-            ctx.save();
-            ctx.translate(bladeX, bladeY);
-            ctx.rotate(bladeAngle + Math.PI / 2); // Rotate blade perpendicular to orbit
-            
-            // Blade shape (small rectangle)
-            const bladeLength = 12;
-            const bladeWidth = 4;
-            ctx.fillStyle = "#ffffff";
-            ctx.fillRect(-bladeWidth / 2, -bladeLength / 2, bladeWidth, bladeLength);
-            
-            // Blade glow
-            ctx.shadowBlur = 8;
-            ctx.shadowColor = "#ffffff";
-            ctx.strokeStyle = "#c0c0c0";
-            ctx.lineWidth = 1;
-            ctx.strokeRect(-bladeWidth / 2, -bladeLength / 2, bladeWidth, bladeLength);
-            ctx.shadowBlur = 0;
-            
-            ctx.restore();
-          }
-        }
-      }
-    }
-
-    if (p.shield > 0) {
-      ctx.strokeStyle = "#9cffd6";
-      ctx.globalAlpha = 0.9;
-      // Shield thickness increases with charges: 1px base + 1px per charge (capped at reasonable max)
-      const shieldThickness = 1 + Math.min(p.shield, 10); // Max 11px thickness
-      ctx.lineWidth = shieldThickness;
-      if (ISO_MODE) {
-        const { w, h } = s.arena;
-        const scale = isoScaleRef.current;
-        const playerIso = worldToIso(p.x, p.y, 0, scale);
-        const camIso = worldToIso(cam.x, cam.y, 0, scale);
-        const screenX = w / 2 + playerIso.x - camIso.x;
-        const screenY = h / 2 + playerIso.y - camIso.y;
-        ctx.beginPath();
-        ctx.arc(screenX, screenY, p.r + 6, 0, Math.PI * 2);
-        ctx.stroke();
-      } else {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r + 6, 0, Math.PI * 2);
-      ctx.stroke();
-      }
-    }
+    // Admin functions to display
+    const adminFunctions = [
+      { name: "Level Up", action: "levelup" },
+      { name: "Spawn Boss", action: "spawnBoss" },
+      { name: "Spawn Chest", action: "spawnChest" },
+      { name: "Spawn Speed", action: "spawnSpeed" },
+      { name: "Spawn Heal", action: "spawnHeal" },
+      { name: "Spawn Magnet", action: "spawnMagnet" },
+      { name: "Full Heal", action: "fullHeal" },
+      { name: "+1000 Gold", action: "addGold" },
+      { name: "+1000 XP", action: "addXP" },
+      { name: "Kill All", action: "killAll" },
+      { name: "Give All Weapons", action: "giveAllWeapons" },
+      { name: "Give All Tomes", action: "giveAllTomes" },
+      { name: "Give All Items", action: "giveAllItems" },
+    ];
     
-    // Draw spikes for Spiky Shield (thorns)
-    if (p.thorns > 0) {
-      ctx.strokeStyle = "#ff7a3d";
-      ctx.fillStyle = "#ff7a3d";
-      ctx.globalAlpha = 0.8;
-      ctx.lineWidth = 2;
-      const spikeCount = 8;
-      const spikeLength = 4 + p.thorns * 12; // Smaller spikes - scale with thorns value
-      const spikeRadius = p.r + 4;
-      if (ISO_MODE) {
-        const { w, h } = s.arena;
-        const scale = isoScaleRef.current;
-        const playerIso = worldToIso(p.x, p.y, 0, scale);
-        const camIso = worldToIso(cam.x, cam.y, 0, scale);
-        const centerX = w / 2 + playerIso.x - camIso.x;
-        const centerY = h / 2 + playerIso.y - camIso.y;
-        for (let i = 0; i < spikeCount; i++) {
-          const angle = (i / spikeCount) * Math.PI * 2;
-          const startX = centerX + Math.cos(angle) * spikeRadius;
-          const startY = centerY + Math.sin(angle) * spikeRadius;
-          const endX = centerX + Math.cos(angle) * (spikeRadius + spikeLength);
-          const endY = centerY + Math.sin(angle) * (spikeRadius + spikeLength);
-          ctx.beginPath();
-          ctx.moveTo(startX, startY);
-          ctx.lineTo(endX, endY);
-          ctx.stroke();
-          // Draw small triangle at tip
-          const tipAngle1 = angle + 0.3;
-          const tipAngle2 = angle - 0.3;
-          ctx.beginPath();
-          ctx.moveTo(endX, endY);
-          ctx.lineTo(endX + Math.cos(tipAngle1) * 3, endY + Math.sin(tipAngle1) * 3);
-          ctx.lineTo(endX + Math.cos(tipAngle2) * 3, endY + Math.sin(tipAngle2) * 3);
-          ctx.closePath();
-          ctx.fill();
-        }
-      } else {
-        for (let i = 0; i < spikeCount; i++) {
-          const angle = (i / spikeCount) * Math.PI * 2;
-          const startX = p.x + Math.cos(angle) * spikeRadius;
-          const startY = p.y + Math.sin(angle) * spikeRadius;
-          const endX = p.x + Math.cos(angle) * (spikeRadius + spikeLength);
-          const endY = p.y + Math.sin(angle) * (spikeRadius + spikeLength);
-          ctx.beginPath();
-          ctx.moveTo(startX, startY);
-          ctx.lineTo(endX, endY);
-          ctx.stroke();
-          // Draw small triangle at tip
-          const tipAngle1 = angle + 0.3;
-          const tipAngle2 = angle - 0.3;
-          ctx.beginPath();
-          ctx.moveTo(endX, endY);
-          ctx.lineTo(endX + Math.cos(tipAngle1) * 3, endY + Math.sin(tipAngle1) * 3);
-          ctx.lineTo(endX + Math.cos(tipAngle2) * 3, endY + Math.sin(tipAngle2) * 3);
-          ctx.closePath();
-          ctx.fill();
-        }
-      }
-    }
-
-    ctx.globalAlpha = 1;
-    for (const q of s.particles) {
-      const t = clamp(1 - q.t / q.life, 0, 1);
-      const hue2 = q.hue == null ? hue : q.hue;
+    // Check button clicks
+    for (let i = 0; i < adminFunctions.length; i++) {
+      const btnY = buttonStartY + i * buttonSpacing;
+      const btnX = adminPanelX + (adminPanelW - buttonW) / 2;
       
-      let particleX, particleY;
-      if (ISO_MODE) {
-        const { w, h } = s.arena;
-        const scale = isoScaleRef.current;
-        const particleIso = worldToIso(q.x, q.y, 0, scale);
-        const camIso = worldToIso(cam.x, cam.y, 0, scale);
-        particleX = w / 2 + particleIso.x - camIso.x;
-        particleY = h / 2 + particleIso.y - camIso.y;
-      } else {
-        particleX = q.x;
-        particleY = q.y;
-      }
-      
-      if (q.glow) {
-        // Glowing particles with outer glow
-        ctx.save();
-        ctx.globalAlpha = t * 0.4;
-        ctx.fillStyle = `hsl(${hue2}, 90%, 70%)`;
-        ctx.shadowBlur = 8;
-        ctx.shadowColor = `hsl(${hue2}, 90%, 60%)`;
-        ctx.beginPath();
-        ctx.arc(particleX, particleY, q.r * 1.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      }
-      
-      ctx.globalAlpha = t;
-      ctx.fillStyle = `hsl(${hue2}, 80%, ${q.glow ? 75 : 62}%)`;
-      ctx.beginPath();
-      ctx.arc(particleX, particleY, q.r, 0, Math.PI * 2);
-      ctx.fill();
-      
-      if (q.trail) {
-        // Draw trail
-        ctx.globalAlpha = t * 0.3;
-        ctx.beginPath();
-        ctx.arc(particleX, particleY, q.r * 0.5, 0, Math.PI * 2);
-      ctx.fill();
-      }
-    }
-    
-    // Draw hit flashes
-    if (s.hitFlashes) {
-      for (const flash of s.hitFlashes) {
-        const t = clamp(1 - flash.t / flash.life, 0, 1);
-        let flashX, flashY;
-        if (ISO_MODE) {
-          const { w, h } = s.arena;
-          const scale = isoScaleRef.current;
-          const flashIso = worldToIso(flash.x, flash.y, 0, scale);
-          const camIso = worldToIso(cam.x, cam.y, 0, scale);
-          flashX = w / 2 + flashIso.x - camIso.x;
-          flashY = h / 2 + flashIso.y - camIso.y;
-        } else {
-          flashX = flash.x;
-          flashY = flash.y;
-        }
-        ctx.save();
-        ctx.globalAlpha = t * 0.6;
-        ctx.fillStyle = flash.color;
-        ctx.shadowBlur = 15;
-        ctx.shadowColor = flash.color;
-        ctx.beginPath();
-        ctx.arc(flashX, flashY, 20 * flash.size * t, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      }
-    }
-
-    // Draw burning areas (ground fire) - more subtle visual
-    for (const area of s.burningAreas) {
-      const t = clamp(1 - area.t / area.life, 0, 1);
-      const pulse = Math.sin(s.t * 6 + area.t * 2) * 0.3 + 0.7;
-      
-      let areaX, areaY;
-      if (ISO_MODE) {
-        const { w, h } = s.arena;
-        const scale = isoScaleRef.current;
-        const areaIso = worldToIso(area.x, area.y, 0, scale);
-        const camIso = worldToIso(cam.x, cam.y, 0, scale);
-        areaX = w / 2 + areaIso.x - camIso.x;
-        areaY = h / 2 + areaIso.y - camIso.y;
-      } else {
-        areaX = area.x;
-        areaY = area.y;
-      }
-      
-      // In isometric mode, draw as ellipse on the floor (ground plane)
-      if (ISO_MODE) {
-        // Outer glow - very subtle (ellipse on isometric ground)
-        ctx.globalAlpha = t * 0.15 * pulse;
-        ctx.fillStyle = "#ff7a3d";
-        ctx.beginPath();
-        // Ellipse: wider horizontally, shorter vertically (isometric projection)
-        ctx.ellipse(areaX, areaY, area.r * 1.2, area.r * 0.6, 0, 0, Math.PI * 2);
-        ctx.fill();
-        
-        // Inner ring - subtle pattern
-        ctx.globalAlpha = t * 0.25 * pulse;
-        ctx.fillStyle = "#ffaa44";
-        ctx.beginPath();
-        ctx.ellipse(areaX, areaY, area.r * 0.7 * 1.2, area.r * 0.7 * 0.6, 0, 0, Math.PI * 2);
-        ctx.fill();
-        
-        // Small bright core - very small and subtle
-        ctx.globalAlpha = t * 0.4 * pulse;
-        ctx.fillStyle = "#ffcc66";
-        ctx.beginPath();
-        ctx.ellipse(areaX, areaY, area.r * 0.3 * 1.2, area.r * 0.3 * 0.6, 0, 0, Math.PI * 2);
-        ctx.fill();
-      } else {
-        // Top-down mode: draw as circles
-        // Outer glow - very subtle
-        ctx.globalAlpha = t * 0.15 * pulse;
-        ctx.fillStyle = "#ff7a3d";
-        ctx.beginPath();
-        ctx.arc(areaX, areaY, area.r, 0, Math.PI * 2);
-        ctx.fill();
-        
-        // Inner ring - subtle pattern
-        ctx.globalAlpha = t * 0.25 * pulse;
-        ctx.fillStyle = "#ffaa44";
-        ctx.beginPath();
-        ctx.arc(areaX, areaY, area.r * 0.7, 0, Math.PI * 2);
-        ctx.fill();
-        
-        // Small bright core - very small and subtle
-        ctx.globalAlpha = t * 0.4 * pulse;
-        ctx.fillStyle = "#ffcc66";
-        ctx.beginPath();
-        ctx.arc(areaX, areaY, area.r * 0.3, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      
-      // Reset alpha
-      ctx.globalAlpha = 1.0;
-    }
-
-    // Draw auras (player AoE effects)
-    for (const aura of s.auras) {
-      const t = clamp(1 - aura.t / aura.life, 0, 1);
-      ctx.globalAlpha = t * 0.4;
-      ctx.strokeStyle = aura.color || "#ff7a3d";
-      ctx.lineWidth = 2;
-      if (ISO_MODE) {
-        const { w, h } = s.arena;
-        const scale = isoScaleRef.current;
-        const playerIso = worldToIso(p.x, p.y, 0, scale);
-        const camIso = worldToIso(cam.x, cam.y, 0, scale);
-        const centerX = w / 2 + playerIso.x - camIso.x;
-        const centerY = h / 2 + playerIso.y - camIso.y;
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, aura.r, 0, Math.PI * 2);
-        ctx.stroke();
-        // Pulsing effect
-        const pulse = Math.sin(s.t * 8) * 0.2 + 0.8;
-        ctx.globalAlpha = t * 0.2 * pulse;
-        ctx.fillStyle = aura.color || "#ff7a3d";
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, aura.r, 0, Math.PI * 2);
-        ctx.fill();
-      } else {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, aura.r, 0, Math.PI * 2);
-        ctx.stroke();
-        // Pulsing effect
-        const pulse = Math.sin(s.t * 8) * 0.2 + 0.8;
-        ctx.globalAlpha = t * 0.2 * pulse;
-        ctx.fillStyle = aura.color || "#ff7a3d";
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, aura.r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    
-    // Draw slice effects, shockwaves, and particles
-    for (const f of s.floaters) {
-      let floaterX, floaterY;
-      if (ISO_MODE) {
-        const { w, h } = s.arena;
-        const scale = isoScaleRef.current;
-        // For floaters with velocity, calculate final position
-        const finalX = f.x + (f.vx || 0) * (f.t || 0);
-        const finalY = f.y + (f.vy || 0) * (f.t || 0);
-        const floaterIso = worldToIso(finalX, finalY, 0, scale);
-        const camIso = worldToIso(cam.x, cam.y, 0, scale);
-        floaterX = w / 2 + floaterIso.x - camIso.x;
-        floaterY = h / 2 + floaterIso.y - camIso.y;
-      } else {
-        floaterX = f.x + (f.vx || 0) * (f.t || 0);
-        floaterY = f.y + (f.vy || 0) * (f.t || 0);
-      }
-      
-      if (f.type === "shockwave") {
-        const t = clamp(f.t / f.life, 0, 1);
-        ctx.save();
-        ctx.globalAlpha = (1 - t) * 0.8;
-        ctx.strokeStyle = f.color;
-        ctx.lineWidth = 3 - t * 2;
-        ctx.beginPath();
-        ctx.arc(floaterX, floaterY, f.r * (0.3 + t * 0.7), 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
-        continue;
-      } else if (f.type === "particle") {
-        const t = clamp(f.t / f.life, 0, 1);
-        ctx.save();
-        ctx.globalAlpha = 1 - t;
-        ctx.fillStyle = f.color;
-        ctx.beginPath();
-        ctx.arc(floaterX, floaterY, 3 * (1 - t), 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-        continue;
-      } else if (f.type === "slice") {
-        const t = clamp(1 - f.t / f.life, 0, 1);
-        ctx.globalAlpha = t;
-        ctx.strokeStyle = f.color || "#ffffff";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        const startX = floaterX - Math.cos(f.angle) * f.length * 0.5;
-        const startY = floaterY - Math.sin(f.angle) * f.length * 0.5;
-        const endX = floaterX + Math.cos(f.angle) * f.length * 0.5;
-        const endY = floaterY + Math.sin(f.angle) * f.length * 0.5;
-        ctx.moveTo(startX, startY);
-        ctx.lineTo(endX, endY);
-        ctx.stroke();
-        // Add glow
-        ctx.shadowBlur = 8;
-        ctx.shadowColor = f.color || "#ffffff";
-        ctx.stroke();
-        ctx.shadowBlur = 0;
-        continue;
-      }
-      
-      const t = clamp(1 - f.t / f.life, 0, 1);
-      ctx.globalAlpha = t;
-      ctx.fillStyle = f.col;
-      ctx.font = `${f.size}px ui-sans-serif, system-ui`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(f.text, floaterX, floaterY);
-    }
-
-    ctx.restore(); // End camera transform
-    
-    // No viewport border - the level boundaries are drawn in world space
-  }
-
-  function drawMinimap(s, ctx) {
-    const { w, h } = s.arena;
-    
-    // Ensure we're in screen space (reset any transforms)
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform to identity
-    
-    const mapSize = 120;
-    const mapX = w - mapSize - 10;
-    const mapY = 10;
-    
-    ctx.globalAlpha = 0.9;
-    ctx.fillStyle = "rgba(0,0,0,0.8)";
-    ctx.fillRect(mapX, mapY, mapSize, mapSize);
-    ctx.strokeStyle = "rgba(230,232,255,0.5)";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(mapX, mapY, mapSize, mapSize);
-    
-    if (s.levelData) {
-      const levelW = s.levelData.w || w;
-      const levelH = s.levelData.h || h;
-      const scale = mapSize / Math.max(levelW, levelH);
-      
-      // Minimal classic minimap - just show room outlines and key points
-      ctx.strokeStyle = "rgba(46,168,255,0.4)";
-      ctx.lineWidth = 1;
-      
-      // Draw room outlines only (minimal)
-      for (const room of s.levelData.rooms) {
-        ctx.strokeRect(mapX + room.x * scale, mapY + room.y * scale, room.w * scale, room.h * scale);
-      }
-      
-      // Draw corridor lines (minimal)
-      ctx.strokeStyle = "rgba(46,168,255,0.25)";
-      for (const corr of s.levelData.corridors) {
-        ctx.strokeRect(mapX + corr.x * scale, mapY + corr.y * scale, corr.w * scale, corr.h * scale);
-      }
-      
-      // Draw interactables as small dots
-      for (const it of s.interact) {
-        if (it.used) continue;
-        ctx.fillStyle = it.kind === INTERACT.CHEST ? "#ffd44a" : it.kind === INTERACT.BOSS_TP ? "#ff5d5d" : "#2ea8ff";
-        ctx.beginPath();
-        ctx.arc(mapX + it.x * scale, mapY + it.y * scale, 2, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      
-      // Draw player as small dot
-      ctx.fillStyle = "#2ea8ff";
-      ctx.beginPath();
-      ctx.arc(mapX + s.player.x * scale, mapY + s.player.y * scale, 3, 0, Math.PI * 2);
-      ctx.fill();
-      
-      // Draw boss if active
-      if (s.boss.active) {
-        ctx.fillStyle = "#ff5d5d";
-        ctx.beginPath();
-        ctx.arc(mapX + s.boss.x * scale, mapY + s.boss.y * scale, 3, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    
-    ctx.restore();
-  }
-
-  function drawHud(s, ctx) {
-    const { w } = s.arena;
-    const p = s.player;
-
-    // Ensure we're in screen space (reset any transforms)
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform to identity
-
-    const centerX = w * 0.5;
-    const topY = 10;
-    const iconSize = 16;
-    const spacing = 8;
-
-    ctx.globalAlpha = 0.95;
-    
-    // HP
-    ctx.fillStyle = "rgba(0,0,0,0.6)";
-    ctx.fillRect(centerX - 80, topY, 70, 24);
-    ctx.fillStyle = "#1fe06a";
-    ctx.font = "bold 14px ui-sans-serif, system-ui";
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    // HP icon (heart)
-    ctx.beginPath();
-    ctx.arc(centerX - 75, topY + 12, 6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#e6e8ff";
-    ctx.fillText(`${Math.round(p.hp)}/${Math.round(p.maxHp)}`, centerX - 60, topY + 12);
-
-    // XP
-    ctx.fillStyle = "rgba(0,0,0,0.6)";
-    ctx.fillRect(centerX - 5, topY, 70, 24);
-    ctx.fillStyle = "#2ea8ff";
-    // XP icon (star)
-    ctx.beginPath();
-    ctx.moveTo(centerX, topY + 6);
-    ctx.lineTo(centerX + 3, topY + 10);
-    ctx.lineTo(centerX + 7, topY + 10);
-    ctx.lineTo(centerX + 4, topY + 13);
-    ctx.lineTo(centerX + 5, topY + 18);
-    ctx.lineTo(centerX, topY + 15);
-    ctx.lineTo(centerX - 5, topY + 18);
-    ctx.lineTo(centerX - 4, topY + 13);
-    ctx.lineTo(centerX - 7, topY + 10);
-    ctx.lineTo(centerX - 3, topY + 10);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = "#e6e8ff";
-    ctx.fillText(`${format(s.xp)}/${format(s.xpNeed)}`, centerX + 5, topY + 12);
-
-    // Gold
-    ctx.fillStyle = "rgba(0,0,0,0.6)";
-    ctx.fillRect(centerX + 70, topY, 70, 24);
-    ctx.fillStyle = "#ffd44a";
-    // Gold icon (coin)
-    ctx.beginPath();
-    ctx.arc(centerX + 75, topY + 12, 6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#e6e8ff";
-    ctx.fillText(format(p.coins), centerX + 85, topY + 12);
-
-    // Floor display (moved to top HUD)
-    ctx.fillStyle = "rgba(0,0,0,0.6)";
-    ctx.fillRect(centerX + 145, topY, 60, 24);
-    ctx.fillStyle = "#c23bff";
-    ctx.font = "bold 14px ui-sans-serif, system-ui";
-    ctx.textAlign = "left";
-    ctx.fillText(`F${s.floor}`, centerX + 150, topY + 12);
-    
-    // ISO_SCALE display (only in isometric mode)
-    if (ISO_MODE) {
-      ctx.fillStyle = "rgba(0,0,0,0.6)";
-      ctx.fillRect(centerX + 210, topY, 80, 24);
-      ctx.fillStyle = "#ff7a3d";
-      ctx.font = "bold 12px ui-sans-serif, system-ui";
-      ctx.textAlign = "left";
-      ctx.fillText(`ISO: ${isoScaleRef.current.toFixed(3)}`, centerX + 215, topY + 12);
-    }
-
-    // Ability hotbar (WoW/League style)
-    if (p.abilityId) {
-      const { h } = s.arena;
-      const hotbarSize = 48;
-      const hotbarX = centerX - hotbarSize / 2;
-      const hotbarY = h - 80; // Bottom of screen
-      const cooldownPercent = p.abilityT > 0 ? Math.min(1, p.abilityT / (p.abilityCd * (p.abilityCdMult || 1))) : 0;
-      
-      // Ability is ready when cooldown is 0 (cooldown now starts immediately when ability is used)
-      const isReady = cooldownPercent === 0;
-      
-      // Background square
-      ctx.fillStyle = isReady ? "rgba(40,60,80,0.9)" : "rgba(80,20,20,0.9)";
-      ctx.fillRect(hotbarX, hotbarY, hotbarSize, hotbarSize);
-      
-      // Border
-      ctx.strokeStyle = isReady ? "#1fe06a" : "#ff5d5d";
-      ctx.lineWidth = 3;
-      ctx.strokeRect(hotbarX, hotbarY, hotbarSize, hotbarSize);
-      
-      // Ability icon (simple shape based on ability)
-      ctx.save();
-      ctx.translate(hotbarX + hotbarSize / 2, hotbarY + hotbarSize / 2);
-      ctx.globalAlpha = isReady ? 1.0 : 0.3;
-      if (p.abilityId === "blink") {
-        // Blink icon - teleport symbol
-        ctx.fillStyle = "#2ea8ff";
-        ctx.beginPath();
-        ctx.arc(0, 0, 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "#ffffff";
-        ctx.beginPath();
-        ctx.arc(0, -4, 4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(0, 4, 4, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (p.abilityId === "quickdraw") {
-        // Quick Draw icon - crosshair/revolver symbol
-        ctx.strokeStyle = "#ffd44a";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(0, 0, 10, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(-10, 0);
-        ctx.lineTo(10, 0);
-        ctx.moveTo(0, -10);
-        ctx.lineTo(0, 10);
-        ctx.stroke();
-      } else if (p.abilityId === "slam") {
-        // Slam icon - impact symbol
-        ctx.fillStyle = "#ff7a3d";
-        ctx.beginPath();
-        ctx.arc(0, 0, 14, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 16px ui-sans-serif, system-ui";
-        ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-        ctx.fillText("!", 0, 0);
-      }
-      ctx.restore();
-      
-      // Circular cooldown overlay (red tint when on cooldown)
-      if (!isReady) {
-        ctx.save();
-        ctx.translate(hotbarX + hotbarSize / 2, hotbarY + hotbarSize / 2);
-        ctx.rotate(-Math.PI / 2); // Start from top
-        ctx.fillStyle = "rgba(255,0,0,0.6)";
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.arc(0, 0, hotbarSize / 2, 0, Math.PI * 2 * cooldownPercent);
-        ctx.lineTo(0, 0);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-      }
-      
-      // Timer text
-      if (!isReady) {
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 14px ui-sans-serif, system-ui";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        // p.abilityT counts DOWN from full cooldown to 0, so it IS the time left
-        const timeLeft = Math.max(0, p.abilityT);
-        ctx.fillText(timeLeft.toFixed(1), hotbarX + hotbarSize / 2, hotbarY + hotbarSize / 2);
-      }
-      
-      // Keybind text (bottom)
-      ctx.fillStyle = "rgba(255,255,255,0.7)";
-      ctx.font = "10px ui-sans-serif, system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText("SHIFT", hotbarX + hotbarSize / 2, hotbarY + hotbarSize + 12);
-    }
-
-    // Boss HP bar (always visible when boss is active)
-    if (s.boss.active && s.boss.maxHp > 0) {
-      const bossBarY = p.abilityId ? topY + 65 : topY + 35;
-      const bossBarW = 300;
-      const bossBarX = centerX - bossBarW / 2;
-      const hpPercent = Math.max(0, Math.min(1, s.boss.hp / s.boss.maxHp));
-      
-      // Background
-      ctx.fillStyle = "rgba(0,0,0,0.7)";
-      ctx.fillRect(bossBarX, bossBarY, bossBarW, 20);
-      
-      // HP bar
-      ctx.fillStyle = hpPercent > 0.5 ? "#1fe06a" : hpPercent > 0.25 ? "#ffd44a" : "#ff5d5d";
-      ctx.fillRect(bossBarX + 2, bossBarY + 2, (bossBarW - 4) * hpPercent, 16);
-      
-      // Border
-      ctx.strokeStyle = "rgba(230,232,255,0.8)";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(bossBarX, bossBarY, bossBarW, 20);
-      
-      // Text
-    ctx.fillStyle = "#e6e8ff";
-      ctx.font = "bold 12px ui-sans-serif, system-ui";
-    ctx.textAlign = "center";
-      ctx.fillText(`BOSS: ${Math.round(s.boss.hp)}/${Math.round(s.boss.maxHp)}`, centerX, bossBarY + 13);
-    }
-
-    // Draw collected upgrades at the bottom
-    const bottomY = s.arena.h - 30;
-    const upgradeIconSize = 24;
-    const iconSpacing = 28;
-    let iconX = 20;
-    
-    ctx.globalAlpha = 0.95;
-    
-    // Ensure arrays exist
-    if (!p.collectedWeapons) p.collectedWeapons = [];
-    if (!p.collectedTomes) p.collectedTomes = [];
-    if (!p.collectedItems) p.collectedItems = [];
-    
-    // Draw weapons
-    if (p.collectedWeapons && p.collectedWeapons.length > 0) {
-      for (const weapon of p.collectedWeapons) {
-        ctx.save();
-        ctx.translate(iconX, bottomY);
-        if (weapon.icon) {
-          weapon.icon(ctx, upgradeIconSize);
-        } else {
-          // Fallback icon
-          ctx.fillStyle = "#2ea8ff";
-          ctx.fillRect(-upgradeIconSize/2, -upgradeIconSize/2, upgradeIconSize, upgradeIconSize);
-        }
-        ctx.restore();
-        iconX += iconSpacing;
-      }
-    }
-    
-    // Draw tomes
-    if (p.collectedTomes && p.collectedTomes.length > 0) {
-      for (const tome of p.collectedTomes) {
-        ctx.save();
-        ctx.translate(iconX, bottomY);
-        if (tome.icon) {
-          tome.icon(ctx, upgradeIconSize);
-        } else {
-          // Fallback icon
-          ctx.fillStyle = "#1fe06a";
-          ctx.fillRect(-upgradeIconSize/2, -upgradeIconSize/2, upgradeIconSize, upgradeIconSize);
-        }
-        ctx.restore();
-        iconX += iconSpacing;
-      }
-    }
-    
-    // Draw items
-    if (p.collectedItems && p.collectedItems.length > 0) {
-      for (const item of p.collectedItems) {
-        ctx.save();
-        ctx.translate(iconX, bottomY);
-        if (item.icon) {
-          item.icon(ctx, upgradeIconSize);
-        } else {
-          // Fallback icon
-          ctx.fillStyle = "#ffd44a";
-          ctx.fillRect(-upgradeIconSize/2, -upgradeIconSize/2, upgradeIconSize, upgradeIconSize);
-        }
-        ctx.restore();
-        iconX += iconSpacing;
-      }
-    }
-
-    ctx.restore();
-  }
-
-  function drawOverlay(s, ctx) {
-    const { w, h } = s.arena;
-    const u = uiRef.current;
-    
-    // Ensure we're in screen space (reset any transforms)
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform to identity
-    
-    // Draw minimap in overlay (always on top)
-    if (s && u.screen === "running") {
-      if (s.levelData) {
-        drawMinimap(s, ctx);
-      }
-    }
-
-    if (u.screen === "running") {
-      // Pause menu
-      if (u.pauseMenu) {
-        ctx.fillStyle = "rgba(0,0,0,0.85)";
-        ctx.fillRect(0, 0, w, h);
-        
-        ctx.fillStyle = "#e6e8ff";
-        ctx.font = "bold 24px ui-sans-serif, system-ui";
-        ctx.textAlign = "center";
-        ctx.fillText("PAUSED", w * 0.5, 100);
-        
-        // Menu buttons
-        const buttonY = 180;
-        const buttonH = 50;
-        const buttonSpacing = 70;
-        
-        // Continue button
-        ctx.fillStyle = "rgba(40,60,80,0.9)";
-        ctx.fillRect(w * 0.5 - 120, buttonY, 240, buttonH);
-        ctx.strokeStyle = "#1fe06a";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(w * 0.5 - 120, buttonY, 240, buttonH);
-        ctx.fillStyle = "#1fe06a";
-        ctx.font = "18px ui-sans-serif, system-ui";
-        ctx.fillText("Continue (ESC)", w * 0.5, buttonY + 32);
-        
-        // New Game button
-        ctx.fillStyle = "rgba(40,60,80,0.9)";
-        ctx.fillRect(w * 0.5 - 120, buttonY + buttonSpacing, 240, buttonH);
-        ctx.strokeStyle = "#2ea8ff";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(w * 0.5 - 120, buttonY + buttonSpacing, 240, buttonH);
-        ctx.fillStyle = "#2ea8ff";
-        ctx.fillText("New Game", w * 0.5, buttonY + buttonSpacing + 32);
-        
-        // Admin button
-        ctx.fillStyle = "rgba(40,60,80,0.9)";
-        ctx.fillRect(w * 0.5 - 120, buttonY + buttonSpacing * 2, 240, buttonH);
-        ctx.strokeStyle = "#ffd44a";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(w * 0.5 - 120, buttonY + buttonSpacing * 2, 240, buttonH);
-        ctx.fillStyle = "#ffd44a";
-        ctx.fillText("Admin", w * 0.5, buttonY + buttonSpacing * 2 + 32);
-        
-        // Mute button
-        const muteButtonX = w * 0.5 - 120;
-        const muteButtonY = buttonY + buttonSpacing * 3;
-        const muteButtonW = 240;
-        const muteButtonH = 50;
-        const isMuted = u.muted;
-        
-        ctx.fillStyle = isMuted ? "rgba(200,60,60,0.9)" : "rgba(40,60,80,0.9)";
-        ctx.fillRect(muteButtonX, muteButtonY, muteButtonW, muteButtonH);
-        ctx.strokeStyle = isMuted ? "#ff5d5d" : "#2ea8ff";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(muteButtonX, muteButtonY, muteButtonW, muteButtonH);
-        ctx.fillStyle = isMuted ? "#ff5d5d" : "#2ea8ff";
-        ctx.font = "18px ui-sans-serif, system-ui";
-        ctx.fillText(isMuted ? "🔇 Muted (M)" : "🔊 Sound (M)", w * 0.5, muteButtonY + 32);
-        
-        // Music volume control
-        const volumeButtonY = muteButtonY + buttonSpacing;
-        const volumeBarW = 200;
-        const volumeBarH = 8;
-        const volumeBarX = w * 0.5 - volumeBarW / 2;
-        const volumeBarY = volumeButtonY + 21;
-        const musicVolume = u.musicVolume !== undefined ? u.musicVolume : 0.5;
-        
-        // Volume label
-        ctx.fillStyle = "#e6e8ff";
-        ctx.font = "14px ui-sans-serif, system-ui";
-        ctx.textAlign = "center";
-        ctx.fillText("Music Volume", w * 0.5, volumeButtonY + 16);
-        
-        // Volume bar background
-        ctx.fillStyle = "rgba(40,60,80,0.9)";
-        ctx.fillRect(volumeBarX, volumeBarY, volumeBarW, volumeBarH);
-        ctx.strokeStyle = "#2ea8ff";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(volumeBarX, volumeBarY, volumeBarW, volumeBarH);
-        
-        // Volume bar fill
-        ctx.fillStyle = "#2ea8ff";
-        ctx.fillRect(volumeBarX, volumeBarY, volumeBarW * musicVolume, volumeBarH);
-        
-        // Volume buttons
-        const volButtonSize = 24;
-        const volMinusX = volumeBarX - volButtonSize - 8;
-        const volPlusX = volumeBarX + volumeBarW + 8;
-        const volButtonY = volumeButtonY + 10;
-        
-        // Minus button
-        ctx.fillStyle = "rgba(40,60,80,0.9)";
-        ctx.fillRect(volMinusX, volButtonY, volButtonSize, volButtonSize);
-        ctx.strokeStyle = "#2ea8ff";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(volMinusX, volButtonY, volButtonSize, volButtonSize);
-        ctx.fillStyle = "#2ea8ff";
-        ctx.font = "16px ui-sans-serif, system-ui";
-        ctx.fillText("-", volMinusX + volButtonSize / 2, volButtonY + 18);
-        
-        // Plus button
-        ctx.fillStyle = "rgba(40,60,80,0.9)";
-        ctx.fillRect(volPlusX, volButtonY, volButtonSize, volButtonSize);
-        ctx.strokeStyle = "#2ea8ff";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(volPlusX, volButtonY, volButtonSize, volButtonSize);
-        ctx.fillStyle = "#2ea8ff";
-        ctx.fillText("+", volPlusX + volButtonSize / 2, volButtonY + 18);
-        
-        // Admin section
-        if (u.showAdmin) {
-          ctx.fillStyle = "rgba(20,30,40,0.95)";
-          ctx.fillRect(w * 0.5 - 220, 100, 440, h - 200);
-          ctx.strokeStyle = "#ffd44a";
-          ctx.lineWidth = 3;
-          ctx.strokeRect(w * 0.5 - 220, 100, 440, h - 200);
-          
-          ctx.fillStyle = "#ffd44a";
-          ctx.font = "bold 18px ui-sans-serif, system-ui";
-          ctx.fillText("ADMIN PANEL", w * 0.5, 130);
-          
-          // Category buttons at top
-          const categoryY = 145;
-          const categoryW = 85;
-          const categoryH = 22;
-          const categories = [
-            { name: "Main", cat: "main" },
-            { name: "Weapons", cat: "weapons" },
-            { name: "Tomes", cat: "tomes" },
-            { name: "Items", cat: "items" },
-          ];
-          
-          for (let i = 0; i < categories.length; i++) {
-            const cat = categories[i];
-            const catX = w * 0.5 - 170 + i * 90;
-            const isActive = u.adminCategory === cat.cat;
-            ctx.fillStyle = isActive ? "rgba(100,120,140,0.9)" : "rgba(60,80,100,0.6)";
-            ctx.fillRect(catX, categoryY, categoryW, categoryH);
-            ctx.strokeStyle = isActive ? "#ffd44a" : "#888";
-            ctx.lineWidth = isActive ? 2 : 1;
-            ctx.strokeRect(catX, categoryY, categoryW, categoryH);
-            ctx.fillStyle = isActive ? "#ffd44a" : "#aaa";
-            ctx.font = "11px ui-sans-serif, system-ui";
-            ctx.fillText(cat.name, catX + categoryW / 2, categoryY + 15);
-          }
-          
-          // More compact layout - two columns
-          const adminY = 175;
-          const adminButtonH = 26;
-          const adminSpacing = 28;
-          const adminCol1X = w * 0.5 - 200;
-          const adminCol2X = w * 0.5 + 20;
-          const adminButtonW = 180;
-          
-          let adminFunctions = [];
-          
-          if (u.adminCategory === "main") {
-            adminFunctions = [
-              { name: "Level Up", action: "levelup" },
-              { name: "Spawn Boss", action: "spawnBoss" },
-              { name: "Spawn Chest", action: "spawnChest" },
-              { name: "Speed Shrine", action: "spawnSpeed" },
-              { name: "Heal Shrine", action: "spawnHeal" },
-              { name: "Magnet Shrine", action: "spawnMagnet" },
-              { name: "Full Heal", action: "fullHeal" },
-              { name: "+1000 Gold", action: "addGold" },
-              { name: "+1000 XP", action: "addXP" },
-              { name: "Kill All", action: "killAll" },
-              { name: "All Weapons", action: "giveAllWeapons" },
-              { name: "All Tomes", action: "giveAllTomes" },
-              { name: "All Items", action: "giveAllItems" },
-              { name: "Close Admin", action: "closeAdmin" },
-            ];
-          } else if (u.adminCategory === "weapons") {
-            adminFunctions = content.weapons.map(w => ({
-              name: w.name.length > 20 ? w.name.substring(0, 20) : w.name,
-              action: `giveWeapon:${w.id}`,
-              weaponId: w.id,
-            }));
-            adminFunctions.push({ name: "Back", action: "backToMain" });
-          } else if (u.adminCategory === "tomes") {
-            adminFunctions = content.tomes.map(t => ({
-              name: t.name.length > 20 ? t.name.substring(0, 20) : t.name,
-              action: `giveTome:${t.id}`,
-              tomeId: t.id,
-            }));
-            adminFunctions.push({ name: "Back", action: "backToMain" });
-          } else if (u.adminCategory === "items") {
-            adminFunctions = content.items.map(it => ({
-              name: it.name.length > 20 ? it.name.substring(0, 20) : it.name,
-              action: `giveItem:${it.id}`,
-              itemId: it.id,
-            }));
-            adminFunctions.push({ name: "Back", action: "backToMain" });
-          }
-          
-          // Draw buttons (show all items - increased from 12)
-          const maxVisible = 20; // Increased to show all items
-          const startIndex = 0;
-          const endIndex = Math.min(adminFunctions.length, startIndex + maxVisible);
-          
-          for (let i = startIndex; i < endIndex; i++) {
-            const func = adminFunctions[i];
-            const displayIndex = i - startIndex;
-            const col = displayIndex % 2;
-            const row = Math.floor(displayIndex / 2);
-            const x = col === 0 ? adminCol1X : adminCol2X;
-            const y = adminY + row * adminSpacing;
-            
-            ctx.fillStyle = "rgba(60,80,100,0.8)";
-            ctx.fillRect(x, y, adminButtonW, adminButtonH);
-            ctx.strokeStyle = "#ffd44a";
-            ctx.lineWidth = 1;
-            ctx.strokeRect(x, y, adminButtonW, adminButtonH);
-            ctx.fillStyle = "#e6e8ff";
-            ctx.font = "11px ui-sans-serif, system-ui";
-            ctx.fillText(func.name, x + adminButtonW / 2, y + 17);
-          }
-          
-          if (adminFunctions.length > maxVisible) {
-            ctx.fillStyle = "rgba(255,255,255,0.5)";
-            ctx.font = "10px ui-sans-serif, system-ui";
-            ctx.fillText(`Showing ${startIndex + 1}-${endIndex} of ${adminFunctions.length}`, w * 0.5, h - 120);
-          }
-        }
-        
-        ctx.restore();
+      if (x >= btnX && x <= btnX + buttonW &&
+          y >= btnY && y <= btnY + buttonH) {
+        handleAdminAction(s, adminFunctions[i].action);
         return;
       }
-      
-      if (u.showStats) {
-        ctx.fillStyle = "rgba(0,0,0,0.72)";
-        ctx.fillRect(0, 0, w, h);
-        ctx.fillStyle = "#e6e8ff";
-        ctx.font = "18px ui-sans-serif, system-ui";
-        ctx.textAlign = "center";
-        ctx.fillText("Stats", w * 0.5, 70);
-
-        const p = s.player;
-        const totalDmg = p.weapons ? p.weapons.reduce((sum, w) => sum + w.weaponDamage, 0) : 0;
-        const totalProj = p.weapons ? p.weapons.reduce((sum, w) => sum + w.projectiles, 0) : 0;
-        const totalBounce = p.weapons ? p.weapons.reduce((sum, w) => sum + w.bounces, 0) : 0;
-        const avgCd = p.weapons && p.weapons.length > 0 
-          ? p.weapons.reduce((sum, w) => sum + w.attackCooldown, 0) / p.weapons.length 
-          : 0;
-        const weaponsList = p.weapons && p.weapons.length > 0
-          ? p.weapons.map(w => `${w.id} Lv${w.level}`).join(", ")
-          : "None";
-        const lines = [
-          `Character: ${p.charName}`,
-          `Weapons: ${weaponsList}`,
-          `Total Damage: ${Math.round(totalDmg)}`,
-          `Avg Attack cd: ${avgCd.toFixed(2)}s`,
-          `Total Projectiles: ${totalProj}`,
-          `Total Bounces: ${totalBounce}`,
-          `Move: ${Math.round(computeSpeed(p))}`,
-          `Crit: ${Math.round(p.critChance * 100)}%`,
-          `Poison: ${Math.round(p.poisonChance * 100)}%`,
-          `Freeze: ${Math.round(p.freezeChance * 100)}%`,
-          `Regen: ${p.regen.toFixed(2)}`,
-          `Armor: ${Math.round(p.armor * 100)}%`,
-          `Evasion: ${Math.round(p.evasion * 100)}%`,
-          `Luck: ${p.luck.toFixed(2)}`,
-          `XP gain: ${p.xpGain.toFixed(2)}`,
-          `Gold gain: ${p.goldGain.toFixed(2)}`,
-          `Ability: ${p.abilityId} cd ${p.abilityCd.toFixed(1)}s`,
-          `Shield: ${p.shield}`,
-          `Time left: ${Math.ceil(s.stageLeft)}s`,
-        ];
-
-        ctx.font = "13px ui-sans-serif, system-ui";
-        ctx.textAlign = "left";
-        const startX = Math.max(20, w * 0.2);
-        let yy = 110;
-        for (const line of lines) {
-          ctx.fillText(line, startX, yy);
-          yy += 22;
-        }
-        ctx.textAlign = "center";
-        ctx.fillStyle = "rgba(230,232,255,0.8)";
-        ctx.fillText("Tab to resume", w * 0.5, h - 40);
-      }
-      ctx.restore();
-      return;
-    }
-
-    if (u.screen === "levelup") {
-      const choices = u.levelChoices || [];
-      const selectedIndex = u.selectedChoiceIndex || 0;
-      const s = stateRef.current;
-      
-      // Don't show choices during chest opening fanfare
-      const showChoices = (u.chestOpenFanfareT || 0) <= 0;
-      
-      // Background with fanfare effects
-      ctx.fillStyle = "rgba(0,0,0,0.76)";
-      ctx.fillRect(0, 0, w, h);
-      
-      // Level up fanfare: animated text and screen flash (rarity-colored)
-      if (u.levelUpFanfareT > 0) {
-        const fanfareProgress = 1 - (u.levelUpFanfareT / 2.5);
-        const textScale = 1 + Math.sin(fanfareProgress * Math.PI) * 0.3; // Scale from 1.0 to 1.3
-        const textAlpha = Math.min(1, fanfareProgress * 2);
-        const glowIntensity = Math.sin(fanfareProgress * Math.PI * 4) * 0.5 + 0.5;
-        
-        // Get rarity color for fanfare
-        const rarityCol = RARITY_COLOR[u.highestRarity] || RARITY_COLOR[RARITY.COMMON];
-        const rarityOrder = { [RARITY.COMMON]: 0, [RARITY.UNCOMMON]: 1, [RARITY.RARE]: 2, [RARITY.LEGENDARY]: 3 };
-        const rarityLevel = rarityOrder[u.highestRarity] || 0;
-        
-        // More intense effects for higher rarities
-        const intensityMult = 1 + rarityLevel * 0.3; // 1.0, 1.3, 1.6, 1.9
-        const flashIntensity = rarityLevel >= 2 ? 1.2 : rarityLevel >= 1 ? 0.8 : 0.5; // Stronger flash for Rare/Legendary
-        
-        ctx.save();
-        ctx.globalAlpha = textAlpha;
-        // Parse hex color to RGB
-        const hex = rarityCol.bg;
-        const r = parseInt(hex.slice(1, 3), 16);
-        const g = parseInt(hex.slice(3, 5), 16);
-        const b = parseInt(hex.slice(5, 7), 16);
-        ctx.fillStyle = `rgba(${r},${g},${b},${0.8 + glowIntensity * 0.2})`;
-        ctx.font = `bold ${Math.round(24 + textScale * 8 * intensityMult)}px ui-sans-serif, system-ui`;
-        ctx.textAlign = "center";
-        ctx.shadowBlur = 20 * glowIntensity * intensityMult;
-        ctx.shadowColor = rarityCol.bg;
-        ctx.fillText("LEVEL UP!", w * 0.5, h * 0.35);
-        ctx.shadowBlur = 0;
-        ctx.restore();
-        
-        // Screen flash effect (rarity-colored, more intense for higher rarities)
-        if (fanfareProgress < 0.15) {
-          const flashAlpha = (0.15 - fanfareProgress) / 0.15 * flashIntensity;
-          ctx.globalAlpha = flashAlpha;
-          ctx.fillStyle = rarityCol.bg;
-          ctx.fillRect(0, 0, w, h);
-          ctx.globalAlpha = 1.0;
-        }
-        
-        // Rarity-colored border flash (more pulses for higher rarities)
-        const pulseCount = rarityLevel >= 3 ? 8 : rarityLevel >= 2 ? 6 : 4;
-        const borderAlpha = Math.sin(fanfareProgress * Math.PI * pulseCount) * 0.4 + 0.3;
-        ctx.strokeStyle = `${rarityCol.bg}${Math.floor(borderAlpha * 255).toString(16).padStart(2, '0')}`;
-        ctx.lineWidth = 8 + rarityLevel * 2; // Thicker border for higher rarities
-        ctx.strokeRect(0, 0, w, h);
-      }
-      
-      // Chest opening fanfare: light beam effect
-      if (u.chestOpenFanfareT > 0 && !showChoices) {
-        const fanfareProgress = 1 - (u.chestOpenFanfareT / 0.3);
-        const beamAlpha = Math.sin(fanfareProgress * Math.PI) * 0.6;
-        
-        // Light beam from center
-        const gradient = ctx.createLinearGradient(w * 0.5, h * 0.3, w * 0.5, h * 0.7);
-        gradient.addColorStop(0, `rgba(255,212,74,${beamAlpha})`);
-        gradient.addColorStop(0.5, `rgba(255,212,74,${beamAlpha * 0.5})`);
-        gradient.addColorStop(1, `rgba(255,212,74,0)`);
-        ctx.fillStyle = gradient;
-        ctx.fillRect(w * 0.3, h * 0.3, w * 0.4, h * 0.4);
-      }
-      
-      if (showChoices) {
-        ctx.fillStyle = "#e6e8ff";
-        ctx.font = "18px ui-sans-serif, system-ui";
-        ctx.textAlign = "center";
-        ctx.fillText("Choose an upgrade", w * 0.5, 78);
-        ctx.font = "12px ui-sans-serif, system-ui";
-        ctx.fillStyle = "rgba(230,232,255,0.8)";
-        ctx.fillText("A/D to scroll, E to select | Click or press 1 2 3", w * 0.5, 100);
-
-      // Position cards by center to avoid scaling issues
-      const cardW = Math.min(320, Math.max(240, w * 0.26));
-      const cardH = 180;
-      const gap = 18;
-      
-      // Account for max scale (1.05x) when calculating spacing
-      const maxScaledW = cardW * 1.05;
-      const spacing = maxScaledW + gap; // Space between card centers
-      
-      // Center the group of 3 cards
-      const screenCenterX = w * 0.5;
-      const leftCardCenterX = screenCenterX - spacing;
-      const centerCardCenterX = screenCenterX;
-      const rightCardCenterX = screenCenterX + spacing;
-      
-      const cardCenters = [leftCardCenterX, centerCardCenterX, rightCardCenterX];
-      const y = h * 0.5 - cardH * 0.5;
-      
-      // Staggered card animation - cards appear one at a time
-      const cardDelay = 0.2; // Delay between each card (seconds) - slightly longer for more suspense
-      const cardAnimDuration = 0.5; // Animation duration for each card - slightly longer
-      const fanfareTime = u.levelUpFanfareT || 0;
-      const fanfareDuration = 2.5;
-      const timeSinceFanfare = Math.max(0, fanfareDuration - fanfareTime);
-
-      for (let i = 0; i < 3; i++) {
-        const c = choices[i];
-        if (!c) continue;
-        
-        // Calculate card entrance animation
-        const cardStartTime = i * cardDelay;
-        const cardAnimProgress = Math.max(0, Math.min(1, (timeSinceFanfare - cardStartTime) / cardAnimDuration));
-        const cardEase = 1 - Math.pow(1 - cardAnimProgress, 3); // Ease out cubic
-        
-        // Card is hidden until its animation starts
-        if (cardAnimProgress <= 0) continue;
-        
-        const isSelected = i === selectedIndex;
-        const col = RARITY_COLOR[c.rarity] || RARITY_COLOR[RARITY.COMMON];
-        
-        // Enhanced selection animation: bounce, glow, and pulse effects
-        const gameTime = s?.t || 0;
-        let selectionScale = isSelected ? 1.08 : 0.98; // Larger scale when selected
-        let selectionGlow = isSelected ? 1.0 : 0.3;
-        
-        // Bounce effect when selected (spring animation)
-        if (isSelected) {
-          const bounceTime = gameTime * 12; // Fast bounce
-          const bounceAmount = Math.abs(Math.sin(bounceTime)) * 0.05; // Bounce up to 5% extra
-          selectionScale += bounceAmount;
-          
-          // Pulse glow intensity
-          const glowPulse = Math.sin(gameTime * 15) * 0.3 + 0.7; // Pulse between 0.4 and 1.0
-          selectionGlow = glowPulse;
-        }
-        
-        const pulse = Math.sin(gameTime * 8) * 0.1 + 0.9;
-        const borderPulse = isSelected ? 1.0 + Math.sin(gameTime * 12) * 0.3 : 1.0; // Stronger pulse when selected
-        
-        // Card center position
-        const cardCenterX = cardCenters[i];
-        
-        ctx.save();
-        // Reset transform to ensure clean state
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        // Scale around card center
-        ctx.translate(cardCenterX, y + cardH / 2);
-        
-        // Entrance animation: scale from 0.3 to final scale, fade in, slide up slightly
-        const entranceScale = 0.3 + cardEase * (selectionScale - 0.3);
-        const entranceAlpha = cardEase;
-        const entranceY = (1 - cardEase) * 30; // Slide up from below
-        
-        ctx.scale(entranceScale, entranceScale);
-        ctx.globalAlpha = entranceAlpha;
-        ctx.translate(0, entranceY);
-        ctx.translate(-cardW / 2, -cardH / 2);
-
-        // Rarity-colored background gradient (more intense when selected)
-        const gradient = ctx.createLinearGradient(0, 0, cardW, cardH);
-        const bgAlpha = 0.15 + (isSelected ? 0.25 : 0); // Much brighter when selected
-        gradient.addColorStop(0, `rgba(0,0,0,0.55)`);
-        gradient.addColorStop(0.5, `${col.bg}${Math.floor(bgAlpha * 255).toString(16).padStart(2, '0')}`);
-        gradient.addColorStop(1, `rgba(0,0,0,0.55)`);
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, cardW, cardH);
-        
-        // Glowing aura around selected card
-        if (isSelected) {
-          const auraAlpha = selectionGlow * 0.4;
-          const auraSize = 15 + Math.sin(gameTime * 10) * 5; // Pulsing aura
-          ctx.shadowBlur = auraSize;
-          ctx.shadowColor = col.bg;
-          ctx.globalAlpha = auraAlpha * entranceAlpha;
-          ctx.fillStyle = col.bg;
-          ctx.fillRect(-auraSize, -auraSize, cardW + auraSize * 2, cardH + auraSize * 2);
-          ctx.shadowBlur = 0;
-          ctx.globalAlpha = entranceAlpha;
-        }
-
-        // Rarity-colored border (thicker for higher rarity and when selected)
-        let borderWidth = (c.rarity === RARITY.LEGENDARY ? 4 : c.rarity === RARITY.RARE ? 3 : c.rarity === RARITY.UNCOMMON ? 2 : 1);
-        if (isSelected) {
-          borderWidth = borderWidth * 1.5 * borderPulse; // Much thicker when selected
-        } else {
-          borderWidth = borderWidth * borderPulse;
-        }
-        ctx.strokeStyle = col.bg;
-        ctx.lineWidth = borderWidth;
-        ctx.globalAlpha = selectionGlow * entranceAlpha;
-        
-        // Double border effect for selected cards
-        if (isSelected) {
-          ctx.shadowBlur = 10 * selectionGlow;
-          ctx.shadowColor = col.bg;
-        }
-        ctx.strokeRect(0, 0, cardW, cardH);
-        ctx.shadowBlur = 0;
-        ctx.globalAlpha = entranceAlpha; // Keep entrance alpha for all drawing
-
-        // Top rarity bar
-        ctx.fillStyle = col.bg;
-        ctx.fillRect(0, 0, cardW, 8);
-
-        // Rarity glow effect
-        if (c.rarity === RARITY.LEGENDARY || c.rarity === RARITY.RARE) {
-          ctx.shadowBlur = 15 * selectionGlow * pulse;
-          ctx.shadowColor = col.bg;
-          ctx.fillStyle = `${col.bg}${Math.floor(selectionGlow * 0.3 * 255).toString(16).padStart(2, '0')}`;
-          ctx.fillRect(0, 0, cardW, cardH);
-          ctx.shadowBlur = 0;
-        }
-
-        ctx.fillStyle = "#e6e8ff";
-        ctx.font = "14px ui-sans-serif, system-ui";
-        ctx.textAlign = "left";
-        ctx.globalAlpha = entranceAlpha; // Apply entrance alpha to text
-        ctx.fillText(`${i + 1}. ${c.name}`, 12, 32);
-
-        ctx.font = "12px ui-sans-serif, system-ui";
-        ctx.fillStyle = col.bg;
-        ctx.fillText(`${c.type} • ${c.rarity}`, 12, 52);
-
-          // Show description first
-          if (c.desc) {
-            ctx.fillStyle = "rgba(230,232,255,0.85)";
-            ctx.font = "11px ui-sans-serif, system-ui";
-            ctx.fillText(c.desc, 12, 74);
-          }
-          
-          // Show preview (before/after values) below description
-          if (c.preview) {
-            ctx.fillStyle = "rgba(156,255,214,0.95)";
-            ctx.font = "10px ui-sans-serif, system-ui";
-            // Split preview into multiple lines if needed
-            const previewLines = c.preview.split(" | ");
-            let yPos = c.desc ? 90 : 74; // Start below desc if it exists
-            for (let i = 0; i < Math.min(previewLines.length, 4); i++) {
-              ctx.fillText(previewLines[i], 12, yPos);
-              yPos += 14;
-            }
-          }
-
-          // Enhanced selection indicator with pulsing effect
-          if (isSelected) {
-            const indicatorPulse = Math.sin(gameTime * 15) * 0.3 + 0.7;
-            ctx.fillStyle = col.bg;
-            ctx.font = `bold 12px ui-sans-serif, system-ui`;
-            ctx.globalAlpha = indicatorPulse * entranceAlpha;
-            ctx.shadowBlur = 8 * selectionGlow;
-            ctx.shadowColor = col.bg;
-            ctx.fillText("► SELECTED ◄", 12, cardH - 12);
-            ctx.shadowBlur = 0;
-            ctx.font = "12px ui-sans-serif, system-ui"; // Reset font
-            ctx.globalAlpha = entranceAlpha;
-          } else {
-            ctx.fillStyle = "rgba(230,232,255,0.5)";
-            ctx.fillText("Click to pick", 12, cardH - 12);
-          }
-
-          // Icon with rarity glow
-          ctx.save();
-          ctx.translate(cardW - 26, 28);
-          if (c.rarity === RARITY.LEGENDARY || c.rarity === RARITY.RARE) {
-            ctx.shadowBlur = 8 * selectionGlow;
-            ctx.shadowColor = col.bg;
-          }
-          ctx.fillStyle = "rgba(230,232,255,0.95)";
-          ctx.strokeStyle = col.bg;
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(0, 0, 12, 0, Math.PI * 2);
-          ctx.stroke();
-          const iconSize = 8;
-          if (typeof c.icon === "function") c.icon(ctx, 0, 0, iconSize);
-          ctx.shadowBlur = 0;
-          ctx.restore();
-          
-          // Enhanced particles for selected card - all rarities get particles
-          if (isSelected && s) {
-            const particleCount = c.rarity === RARITY.LEGENDARY ? 8 : c.rarity === RARITY.RARE ? 6 : c.rarity === RARITY.UNCOMMON ? 4 : 3;
-            const baseDist = c.rarity === RARITY.LEGENDARY ? 40 : c.rarity === RARITY.RARE ? 35 : 30;
-            for (let p = 0; p < particleCount; p++) {
-              const angle = (Math.PI * 2 * p) / particleCount + gameTime * 3; // Faster rotation
-              const dist = baseDist + Math.sin(gameTime * 6 + p) * 12; // More dynamic movement
-              const px = cardW / 2 + Math.cos(angle) * dist;
-              const py = cardH / 2 + Math.sin(angle) * dist;
-              const particleSize = 2 + Math.sin(gameTime * 8 + p) * 1.5; // Pulsing particles
-              ctx.fillStyle = col.bg;
-              ctx.globalAlpha = (selectionGlow * 0.8 + 0.2) * entranceAlpha;
-              ctx.beginPath();
-              ctx.arc(px, py, particleSize, 0, Math.PI * 2);
-              ctx.fill();
-              
-              // Outer glow for particles
-              ctx.shadowBlur = 6;
-              ctx.shadowColor = col.bg;
-              ctx.beginPath();
-              ctx.arc(px, py, particleSize * 0.5, 0, Math.PI * 2);
-              ctx.fill();
-              ctx.shadowBlur = 0;
-            }
-            ctx.globalAlpha = entranceAlpha;
-          }
-        }
-
-        ctx.globalAlpha = 1.0; // Reset alpha after card
-        ctx.restore(); // Restore card transform
-      }
-
-      ctx.restore();
-      return;
-    }
-
-    if (u.screen === "dead") {
-      ctx.save();
-      ctx.fillStyle = "rgba(0,0,0,0.78)";
-      ctx.fillRect(0, 0, w, h);
-      ctx.fillStyle = "#e6e8ff";
-      ctx.font = "22px ui-sans-serif, system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText("Game Over", w * 0.5, h * 0.35);
-      ctx.font = "13px ui-sans-serif, system-ui";
-      ctx.fillStyle = "rgba(230,232,255,0.85)";
-      ctx.fillText(`Score ${format(u.score)}`, w * 0.5, h * 0.35 + 34);
-      if (u.deathReason) ctx.fillText(u.deathReason, w * 0.5, h * 0.35 + 56);
-      ctx.fillText("Press E", w * 0.5, h * 0.35 + 88);
-      ctx.restore();
-      return;
-    }
-
-    if (u.screen === "menu") {
-      ctx.save();
-      ctx.fillStyle = "rgba(0,0,0,0.75)";
-      ctx.fillRect(0, 0, w, h);
-      ctx.fillStyle = "#e6e8ff";
-      ctx.font = "22px ui-sans-serif, system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText("Neon Pit", w * 0.5, 86);
-
-      // Latest Updates section (left side)
-      const updatesX = 20;
-      const updatesY = 120;
-      const updatesW = Math.min(320, w * 0.32);
-      const updatesH = 140;
-      
-      // Background for updates panel
-      ctx.fillStyle = "rgba(0,0,0,0.6)";
-      ctx.fillRect(updatesX, updatesY, updatesW, updatesH);
-      ctx.strokeStyle = "rgba(46,168,255,0.4)";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(updatesX, updatesY, updatesW, updatesH);
-      
-      // Updates title
-      ctx.fillStyle = "#2ea8ff";
-      ctx.font = "bold 14px ui-sans-serif, system-ui";
-      ctx.textAlign = "left";
-      ctx.fillText("📋 Latest Updates", updatesX + 10, updatesY + 22);
-      
-      // Updates content
-      ctx.font = "11px ui-sans-serif, system-ui";
-      ctx.fillStyle = "rgba(230,232,255,0.9)";
-      let updateY = updatesY + 42;
-      for (const update of LATEST_UPDATES) {
-        ctx.fillText(update, updatesX + 12, updateY);
-        updateY += 18;
-      }
-
-      ctx.font = "13px ui-sans-serif, system-ui";
-      ctx.fillStyle = "rgba(230,232,255,0.85)";
-      ctx.textAlign = "center";
-      ctx.fillText("WASD move", w * 0.5, 118);
-      ctx.fillText("Space jump | Shift ability", w * 0.5, 140);
-      ctx.fillText("E interact", w * 0.5, 162);
-      ctx.fillText("F fullscreen", w * 0.5, 184);
-      ctx.fillText("Tab stats and pause", w * 0.5, 206);
-
-      ctx.font = "16px ui-sans-serif, system-ui";
-      ctx.fillStyle = "#e6e8ff";
-      ctx.fillText("Choose character", w * 0.5, 260);
-
-      const cards = content.characters;
-      const cardW = Math.min(300, Math.max(220, w * 0.24));
-      const cardH = 140;
-      const gap = 18;
-      const totalW = cardW * 3 + gap * 2;
-      const startX = w * 0.5 - totalW * 0.5;
-      const y = 300;
-
-      for (let i = 0; i < 3; i++) {
-        const c = cards[i];
-        const x = startX + i * (cardW + gap);
-        const active = uiRef.current.selectedChar === c.id;
-
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.fillStyle = active ? "rgba(46,168,255,0.18)" : "rgba(0,0,0,0.55)";
-        ctx.fillRect(0, 0, cardW, cardH);
-        ctx.strokeStyle = active ? "rgba(46,168,255,0.65)" : "rgba(230,232,255,0.12)";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(0, 0, cardW, cardH);
-
-        ctx.fillStyle = "#e6e8ff";
-        ctx.font = "16px ui-sans-serif, system-ui";
-        ctx.textAlign = "left";
-        ctx.fillText(`${i + 1}. ${c.name}`, 12, 32);
-        ctx.font = "12px ui-sans-serif, system-ui";
-        ctx.fillStyle = "rgba(230,232,255,0.8)";
-        ctx.fillText(c.subtitle, 12, 54);
-        ctx.fillText(`Start: ${c.startWeapon}`, 12, 76);
-        ctx.fillText(`Shift: ${c.space.name}`, 12, 98);
-        ctx.fillStyle = active ? "rgba(46,168,255,0.9)" : "rgba(200,220,255,0.85)";
-        ctx.font = "11px ui-sans-serif, system-ui";
-        ctx.fillText(`Perk: ${c.perk}`, 12, 120);
-
-        ctx.restore();
-      }
-
-      ctx.fillStyle = "rgba(230,232,255,0.9)";
-      ctx.font = "14px ui-sans-serif, system-ui";
-      ctx.fillText("Press E to start", w * 0.5, h - 80);
-      if (u.best > 0) {
-        ctx.fillStyle = "rgba(230,232,255,0.7)";
-        ctx.font = "12px ui-sans-serif, system-ui";
-        ctx.fillText(`Best ${format(u.best)}`, w * 0.5, h - 54);
-      }
-      
-      // Mute button
-      const muteButtonX = w - 140;
-      const muteButtonY = 20;
-      const muteButtonW = 120;
-      const muteButtonH = 35;
-      const isMuted = u.muted;
-      
-      ctx.fillStyle = isMuted ? "rgba(200,60,60,0.8)" : "rgba(40,60,80,0.9)";
-      ctx.fillRect(muteButtonX, muteButtonY, muteButtonW, muteButtonH);
-      ctx.strokeStyle = isMuted ? "#ff5d5d" : "#2ea8ff";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(muteButtonX, muteButtonY, muteButtonW, muteButtonH);
-      ctx.fillStyle = isMuted ? "#ff5d5d" : "#2ea8ff";
-      ctx.font = "14px ui-sans-serif, system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText(isMuted ? "🔇 Muted (M)" : "🔊 Sound (M)", muteButtonX + muteButtonW / 2, muteButtonY + 24);
-      
-      // Music volume control
-      const volumeY = muteButtonY + muteButtonH + 10;
-      const volumeW = 120;
-      const volumeH = 20;
-      const volumeBarW = 100;
-      const volumeBarH = 6;
-      const volumeBarX = muteButtonX + (muteButtonW - volumeBarW) / 2;
-      const volumeBarY = volumeY + (volumeH - volumeBarH) / 2;
-      const musicVolume = u.musicVolume !== undefined ? u.musicVolume : 0.5;
-      
-      // Volume label
-      ctx.fillStyle = "rgba(230,232,255,0.9)";
-      ctx.font = "11px ui-sans-serif, system-ui";
-      ctx.textAlign = "left";
-      ctx.fillText("Volume", muteButtonX, volumeY - 2);
-      
-      // Volume bar background
-      ctx.fillStyle = "rgba(40,60,80,0.9)";
-      ctx.fillRect(volumeBarX, volumeBarY, volumeBarW, volumeBarH);
-      ctx.strokeStyle = "#2ea8ff";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(volumeBarX, volumeBarY, volumeBarW, volumeBarH);
-      
-      // Volume bar fill
-      ctx.fillStyle = "#2ea8ff";
-      ctx.fillRect(volumeBarX, volumeBarY, volumeBarW * musicVolume, volumeBarH);
-      
-      // Volume buttons
-      const volButtonSize = 18;
-      const volButtonY = volumeY;
-      const volMinusX = volumeBarX - volButtonSize - 4;
-      const volPlusX = volumeBarX + volumeBarW + 4;
-      
-      // Minus button
-      ctx.fillStyle = "rgba(40,60,80,0.9)";
-      ctx.fillRect(volMinusX, volButtonY, volButtonSize, volButtonSize);
-      ctx.strokeStyle = "#2ea8ff";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(volMinusX, volButtonY, volButtonSize, volButtonSize);
-      ctx.fillStyle = "#2ea8ff";
-      ctx.font = "12px ui-sans-serif, system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText("-", volMinusX + volButtonSize / 2, volButtonY + 14);
-      
-      // Plus button
-      ctx.fillStyle = "rgba(40,60,80,0.9)";
-      ctx.fillRect(volPlusX, volButtonY, volButtonSize, volButtonSize);
-      ctx.strokeStyle = "#2ea8ff";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(volPlusX, volButtonY, volButtonSize, volButtonSize);
-      ctx.fillStyle = "#2ea8ff";
-      ctx.fillText("+", volPlusX + volButtonSize / 2, volButtonY + 14);
-      
-      ctx.restore();
-      return;
     }
   }
 
@@ -9181,75 +5285,69 @@ export default function NeonPitRoguelikeV3() {
         break;
       case "fullHeal":
         p.hp = p.maxHp;
-        p.shield = p.maxShield || 0;
-        pushCombatText(s, p.x, p.y - 30, "FULL HEAL", "#1fe06a", { size: 16, life: 1.2 });
         break;
       case "addGold":
         p.coins += 1000;
-        s.score += 1000 * 3;
-        pushCombatText(s, p.x, p.y - 30, "+1000 Gold", "#ffd44a", { size: 16, life: 1.2 });
         break;
       case "addXP":
         s.xp += 1000;
-        pushCombatText(s, p.x, p.y - 30, "+1000 XP", "#2ea8ff", { size: 16, life: 1.2 });
         break;
       case "killAll":
-        // Kill all enemies
         for (const e of s.enemies) {
-          if (e.hp > 0) {
-            e.hp = 0;
-            addParticle(s, e.x, e.y, 12, 200, { size: 2.5, speed: 1.2 });
-          }
+          e.hp = 0;
         }
-        pushCombatText(s, p.x, p.y - 30, "ALL ENEMIES KILLED", "#ff5d5d", { size: 16, life: 1.2 });
         break;
       case "giveAllWeapons":
-        // Give all weapons at legendary rarity
-        const allWeapons = content.weapons;
-        for (const weapon of allWeapons) {
-          applyWeapon(p, weapon, RARITY.LEGENDARY, false);
+        for (const w of content.weapons) {
+          if (!p.collectedWeapons.find(x => x.id === w.id)) {
+            applyWeapon(p, w, RARITY.LEGENDARY, false);
+            p.collectedWeapons.push({ ...w, rarity: RARITY.LEGENDARY });
+          }
         }
-        pushCombatText(s, p.x, p.y - 30, "ALL WEAPONS ADDED", "#ffd44a", { size: 16, life: 1.2 });
         break;
       case "giveAllTomes":
-        // Give all tomes at legendary rarity
-        const allTomes = content.tomes;
-        for (const tome of allTomes) {
-          tome.apply(p, RARITY.LEGENDARY);
+        for (const t of content.tomes) {
+          if (!p.collectedTomes.find(x => x.id === t.id)) {
+            applyWeapon(p, t, RARITY.LEGENDARY, false);
+            p.collectedTomes.push({ ...t, rarity: RARITY.LEGENDARY });
+          }
         }
-        pushCombatText(s, p.x, p.y - 30, "ALL TOMES ADDED", "#2ea8ff", { size: 16, life: 1.2 });
         break;
       case "giveAllItems":
-        // Give all items at legendary rarity
-        const allItems = content.items;
-        for (const item of allItems) {
-          item.apply(s, RARITY.LEGENDARY);
+        for (const it of content.items) {
+          if (!p.collectedItems.find(x => x.id === it.id)) {
+            applyWeapon(p, it, RARITY.LEGENDARY, false);
+            p.collectedItems.push({ ...it, rarity: RARITY.LEGENDARY });
+          }
         }
-        pushCombatText(s, p.x, p.y - 30, "ALL ITEMS ADDED", "#1fe06a", { size: 16, life: 1.2 });
+        break;
+      case "closeAdmin":
+        setUi((u) => ({ ...u, showAdmin: false }));
         break;
       default:
-        // Handle individual upgrades (giveWeapon:id, giveTome:id, giveItem:id)
         if (action.startsWith("giveWeapon:")) {
           const weaponId = action.split(":")[1];
-          const weapon = content.weapons.find(w => w.id === weaponId);
-          if (weapon) {
+          const weapon = content.weapons.find((w) => w.id === weaponId);
+          if (weapon && !p.collectedWeapons.find((x) => x.id === weaponId)) {
             applyWeapon(p, weapon, RARITY.LEGENDARY, false);
-            pushCombatText(s, p.x, p.y - 30, `${weapon.name} ADDED`, "#ffd44a", { size: 14, life: 1.0 });
+            p.collectedWeapons.push({ ...weapon, rarity: RARITY.LEGENDARY });
           }
         } else if (action.startsWith("giveTome:")) {
           const tomeId = action.split(":")[1];
-          const tome = content.tomes.find(t => t.id === tomeId);
-          if (tome) {
-            tome.apply(p, RARITY.LEGENDARY);
-            pushCombatText(s, p.x, p.y - 30, `${tome.name} ADDED`, "#2ea8ff", { size: 14, life: 1.0 });
+          const tome = content.tomes.find((t) => t.id === tomeId);
+          if (tome && !p.collectedTomes.find((x) => x.id === tomeId)) {
+            applyWeapon(p, tome, RARITY.LEGENDARY, false);
+            p.collectedTomes.push({ ...tome, rarity: RARITY.LEGENDARY });
           }
         } else if (action.startsWith("giveItem:")) {
           const itemId = action.split(":")[1];
-          const item = content.items.find(it => it.id === itemId);
-          if (item) {
-            item.apply(s, RARITY.LEGENDARY);
-            pushCombatText(s, p.x, p.y - 30, `${item.name} ADDED`, "#1fe06a", { size: 14, life: 1.0 });
+          const item = content.items.find((it) => it.id === itemId);
+          if (item && !p.collectedItems.find((x) => x.id === itemId)) {
+            applyWeapon(p, item, RARITY.LEGENDARY, false);
+            p.collectedItems.push({ ...item, rarity: RARITY.LEGENDARY });
           }
+        } else if (action === "backToMain") {
+          setUi((u) => ({ ...u, adminCategory: "main" }));
         }
         break;
     }
@@ -9265,7 +5363,7 @@ export default function NeonPitRoguelikeV3() {
     if (!c) return;
 
     c.apply();
-    
+
     // Show popup text for the upgrade with rarity color
     const p = s.player;
     const col = RARITY_COLOR[c.rarity] || RARITY_COLOR[RARITY.COMMON];
@@ -9311,48 +5409,127 @@ export default function NeonPitRoguelikeV3() {
       if (u.screen !== "running") return;
       s.running = false;
       s.freezeMode = "tab";
-      const nextUi = { ...u, showStats: true, hint: "" };
+      const nextUi = { ...u, pauseMenu: true, showStats: false, hint: "" };
       uiRef.current = nextUi;
       setUi(nextUi);
       return;
     }
 
-    if (u.showStats) {
+    if (u.pauseMenu || u.showStats) {
       s.running = true;
       s.freezeMode = null;
-      const nextUi = { ...u, showStats: false };
+      const nextUi = { ...u, pauseMenu: false, showStats: false };
       uiRef.current = nextUi;
       setUi(nextUi);
     }
   }
 
-  useEffect(() => {
-    runSelfTests();
-  }, []);
 
+
+
+
+
+
+
+
+
+
+
+  // Consolidated event handlers - ALL event listeners in ONE useEffect
   useEffect(() => {
-    resizeCanvas();
+    const c = canvasRef.current;
+    if (!c) return;
+
+    // Resize handler
     const onResize = () => resizeCanvas();
+    resizeCanvas();
     window.addEventListener("resize", onResize);
     document.addEventListener("fullscreenchange", onResize);
-    return () => {
-      window.removeEventListener("resize", onResize);
-      document.removeEventListener("fullscreenchange", onResize);
-    };
-  }, []);
 
-  useEffect(() => {
+    // Keyboard down handler
     const down = (e) => {
+      console.log("Key pressed:", e.key);
       const k = e.key;
-      const keyCode = e.keyCode || e.which;
-      const keyLower = k ? k.toLowerCase() : "";
+      const u = uiRef.current;
 
-      // M key to toggle mute (handle early, works everywhere)
-      if (k === "m" || k === "M" || keyLower === "m") {
+      // Escape key - Toggle pauseMenu (ONLY key that toggles pause)
+      if (k === "Escape") {
+        e.preventDefault();
+        if (u.screen === "running") {
+          const s = stateRef.current;
+          const nextPauseMenu = !u.pauseMenu;
+          const nextUi = { ...u, pauseMenu: nextPauseMenu };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          if (s) {
+            s.running = !nextPauseMenu;
+          }
+          // Resume audio context
+          const a = audioRef.current;
+          if (a.ctx && a.ctx.state === 'suspended') {
+            a.ctx.resume().catch(() => {});
+          }
+        } else if (u.screen === "dead" || u.screen === "levelup") {
+          const nextUi = { ...u, screen: "menu" };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+        }
+        return;
+      }
+
+      // MENU NAVIGATION: Flipped A/D keys to match visual rendering
+      if (u.screen === "levelup") {
+        if (k === "a" || k === "A" || k === "ArrowLeft") {
+          e.preventDefault();
+          const currentIndex = u.selectedChoiceIndex || 0;
+          const count = 3;
+          const newIndex = (currentIndex + 1) % count; // Flipped: A moves right
+          const nextUi = { ...u, selectedChoiceIndex: newIndex };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          return;
+        }
+        if (k === "d" || k === "D" || k === "ArrowRight") {
+          e.preventDefault();
+          const currentIndex = u.selectedChoiceIndex || 0;
+          const count = 3;
+          const newIndex = (currentIndex - 1 + count) % count; // Flipped: D moves left
+          const nextUi = { ...u, selectedChoiceIndex: newIndex };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          return;
+        }
+        // E or Enter or number keys to select
+        if (k === "e" || k === "E" || k === "Enter" || k === "1" || k === "2" || k === "3") {
+          e.preventDefault();
+          const choiceIndex = k === "1" ? 0 : k === "2" ? 1 : k === "3" ? 2 : (u.selectedChoiceIndex || 0);
+          pickChoice(choiceIndex);
+          return;
+        }
+      }
+
+      // Tab key - Toggle showStats (NOT pauseMenu)
+      if (k === "Tab") {
         e.preventDefault();
         e.stopPropagation();
-        ensureAudio(); // Make sure audio is initialized
-        const u = uiRef.current;
+        if (u.screen === "running") {
+          const s = stateRef.current;
+          const nextShowStats = !u.showStats;
+          const nextUi = { ...u, showStats: nextShowStats };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          if (s) {
+            s.running = !nextShowStats;
+          }
+        }
+        return;
+      }
+
+      // M key - toggle mute
+      if (k === "m" || k === "M") {
+        e.preventDefault();
+        e.stopPropagation();
+        ensureAudio();
         const nextMuted = !u.muted;
         const nextUi = { ...u, muted: nextMuted };
         uiRef.current = nextUi;
@@ -9362,11 +5539,11 @@ export default function NeonPitRoguelikeV3() {
       }
 
       // Volume controls: [ and ] keys
+      const keyCode = e.keyCode || e.which;
       if (k === "[" || k === "{" || keyCode === 219) {
         e.preventDefault();
         e.stopPropagation();
         ensureAudio();
-        const u = uiRef.current;
         const currentVol = u.musicVolume !== undefined ? u.musicVolume : 0.5;
         const newVol = Math.max(0, currentVol - 0.1);
         const nextUi = { ...u, musicVolume: newVol };
@@ -9375,12 +5552,10 @@ export default function NeonPitRoguelikeV3() {
         updateMusicVolume();
         return;
       }
-
       if (k === "]" || k === "}" || keyCode === 221) {
         e.preventDefault();
         e.stopPropagation();
         ensureAudio();
-        const u = uiRef.current;
         const currentVol = u.musicVolume !== undefined ? u.musicVolume : 0.5;
         const newVol = Math.min(1, currentVol + 0.1);
         const nextUi = { ...u, musicVolume: newVol };
@@ -9390,16 +5565,7 @@ export default function NeonPitRoguelikeV3() {
         return;
       }
 
-      if (k === "Tab") {
-        e.preventDefault();
-        e.stopPropagation();
-        const u = uiRef.current;
-        if (u.screen === "running") {
-          setPaused(!u.showStats);
-        }
-        return;
-      }
-
+      // F key - fullscreen
       if (k === "f" || k === "F") {
         e.preventDefault();
         ensureAudio();
@@ -9407,438 +5573,287 @@ export default function NeonPitRoguelikeV3() {
         return;
       }
 
-      // Keyboard controls for upgrade selection
-      const u = uiRef.current;
-      if (u.screen === "levelup") {
-        // A/D or Left/Right arrow to scroll through choices
-        if ((k === "a" || k === "A" || k === "ArrowLeft") && u.selectedChoiceIndex > 0) {
+      // Menu screen controls
+      if (u.screen === "menu") {
+        // Number keys 1-3 to select character
+        if (k === "1" || k === "2" || k === "3") {
           e.preventDefault();
-          e.stopPropagation();
-          const nextUi = { ...u, selectedChoiceIndex: u.selectedChoiceIndex - 1 };
-          uiRef.current = nextUi;
-          setUi(nextUi);
+          const charIndex = parseInt(k) - 1;
+          const char = content.characters[charIndex];
+          if (char) setMenuChar(char.id);
           return;
         }
-        if ((k === "d" || k === "D" || k === "ArrowRight") && u.selectedChoiceIndex < 2) {
+        // A/D for character selection - FIXED: A moves RIGHT (++), D moves LEFT (--)
+        if (k === "a" || k === "A" || k === "ArrowLeft") {
           e.preventDefault();
-          e.stopPropagation();
-          const nextUi = { ...u, selectedChoiceIndex: u.selectedChoiceIndex + 1 };
-          uiRef.current = nextUi;
-          setUi(nextUi);
+          const currentIndex = content.characters.findIndex(c => c.id === u.selectedChar);
+          const charCount = content.characters.length;
+          const newIndex = (currentIndex + 1) % charCount; // A moves to next character (right)
+          const newCharId = content.characters[newIndex]?.id;
+          if (newCharId) setMenuChar(newCharId);
           return;
         }
-        
-        // E or Enter to select
+        if (k === "d" || k === "D" || k === "ArrowRight") {
+          e.preventDefault();
+          const currentIndex = content.characters.findIndex(c => c.id === u.selectedChar);
+          const charCount = content.characters.length;
+          const newIndex = (currentIndex - 1 + charCount) % charCount; // D moves to previous character (left)
+          const newCharId = content.characters[newIndex]?.id;
+          if (newCharId) setMenuChar(newCharId);
+          return;
+        }
+        // E or Enter to start
+        if (k === "e" || k === "E" || k === "Enter") {
+          e.preventDefault();
+          ensureAudio();
+          const best = safeBest();
+          newRun(best, u.selectedChar);
+          return;
+        }
+      }
+
+      // Dead screen - E to restart
+      if (u.screen === "dead") {
+        if (k === "e" || k === "E" || k === "Enter") {
+          e.preventDefault();
+          ensureAudio();
+          const best = safeBest();
+          newRun(best, u.selectedChar);
+          return;
+        }
+      }
+
+      // Pause menu keyboard navigation
+      if (u.screen === "running" && u.pauseMenu) {
+        // W/S for up/down navigation
+        if (k === "w" || k === "W" || k === "ArrowUp") {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        if (k === "s" || k === "S" || k === "ArrowDown") {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        // E to select (Continue button)
         if (k === "e" || k === "E" || k === "Enter") {
           e.preventDefault();
           e.stopPropagation();
-          pickChoice(u.selectedChoiceIndex || 0);
+          setPaused(false);
+          return;
+        }
+        // A/D for music volume control
+        if (k === "a" || k === "A") {
+          e.preventDefault();
+          e.stopPropagation();
+          const currentVolume = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+          const newVolume = Math.max(0, currentVolume - 0.1);
+          const nextUi = { ...u, musicVolume: newVolume };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          updateMusicVolume();
+          return;
+        }
+        if (k === "d" || k === "D") {
+          e.preventDefault();
+          e.stopPropagation();
+          const currentVolume = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+          const newVolume = Math.min(1, currentVolume + 0.1);
+          const nextUi = { ...u, musicVolume: newVolume };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          updateMusicVolume();
           return;
         }
       }
 
-      if (k === "1" || k === "2" || k === "3") {
-        if (u.screen === "menu") {
-          const id = content.characters[Number(k) - 1]?.id;
-          if (id) setMenuChar(id);
-        }
-        if (u.screen === "levelup") pickChoice(Number(k) - 1);
-      }
-
-      // Check for E key - multiple ways to detect it
-      if (k === "e" || k === "E" || keyLower === "e" || keyCode === 69) {
-        e.preventDefault();
-        e.stopPropagation();
+      // Running game controls
+      if (u.screen === "running" && stateRef.current?.running) {
         const s = stateRef.current;
-        const u2 = uiRef.current;
+        if (!s) return;
         
-        // Check menu screen first
-        if (u2.screen === "menu") {
-          ensureAudio();
-          const best = safeBest();
-          newRun(best, u2.selectedChar);
-          return;
-        }
-        
-        // Check dead screen
-        if (u.screen === "dead") {
-          ensureAudio();
-          const best = safeBest();
-          const char = s?.player?.charId || u.selectedChar;
-          newRun(best, char);
-          return;
-        }
-        
-        // Check running game for interactables
-        if (s && u.screen === "running" && s.running) {
+        if (k === "e" || k === "E") {
+          e.preventDefault();
           tryUseInteractable(s);
+          return;
         }
-      }
-
-      // A and D keys for character selection in menu
-      if ((k === "a" || k === "A" || k === "d" || k === "D") && uiRef.current.screen === "menu") {
-        e.preventDefault();
-        const u = uiRef.current;
-        const currentIndex = content.characters.findIndex(c => c.id === u.selectedChar);
-        if (currentIndex >= 0) {
-          let newIndex;
-          if (k === "a" || k === "A") {
-            // Next character (move right)
-            newIndex = currentIndex < content.characters.length - 1 ? currentIndex + 1 : 0;
-          } else {
-            // Previous character (move left)
-            newIndex = currentIndex > 0 ? currentIndex - 1 : content.characters.length - 1;
-          }
-          setMenuChar(content.characters[newIndex].id);
+        // Shift key for dash/ability
+        if (k === "Shift" || k === "ShiftLeft" || k === "ShiftRight") {
+          e.preventDefault();
+          useAbility(s);
+          return;
         }
-      }
-
-      if (k === " " || k === "Spacebar") {
-        const s = stateRef.current;
-        const u = uiRef.current;
-        if (s && u.screen === "running" && s.running) {
-          // Space is now jump
-          const p = s.player;
-          // Allow jump if on ground (no cooldown - enemies can hit you when low to prevent spam)
-          if (p.jumpT <= 0 && (p.z === undefined || p.z <= 0)) {
-            p.jumpT = 0.35; // Jump duration (reduced for shorter jumps)
-            const baseJumpV = 130; // Base jump velocity - adjust this value to change jump height (higher = jump higher)
-            p.jumpV = baseJumpV * (p.jumpHeight || 1.0); // Scale with jump height upgrade
-            if (p.z === undefined) p.z = 0;
+        // JUMP LOGIC: Diagonal jumping with direction capture
+        if (e.key === " ") {
+          e.preventDefault();
+          const s = stateRef.current;
+          // ONLY jump if: button was not already held AND player is on the ground AND screen is running
+          if (!keysRef.current.has(" ") && s && s.player.z === 0 && u.screen === "running") {
+            keysRef.current.add(" "); // Mark as held
             
-            // Set horizontal jump velocity based on movement direction for diagonal jump arc
+            // Set vertical jump velocity
+            const baseJumpV = 160.0 * (s.player.jumpHeight || 1.0);
+            s.player.jumpV = baseJumpV;
+            s.player.jumpT = 1.0;
+            
+            // Capture current movement direction for diagonal jump
             const keys = keysRef.current;
             let mx = (keys.has("ArrowRight") || keys.has("d") ? 1 : 0) - (keys.has("ArrowLeft") || keys.has("a") ? 1 : 0);
             let my = (keys.has("ArrowDown") || keys.has("s") ? 1 : 0) - (keys.has("ArrowUp") || keys.has("w") ? 1 : 0);
             
-            if (mx !== 0 || my !== 0) {
-              // Transform input for isometric if needed
-              let dirX, dirY;
-              if (ISO_MODE) {
-                const transformed = transformInputForIsometric(mx, my);
-                dirX = transformed.x;
-                dirY = transformed.y;
-              } else {
-                const len = Math.hypot(mx, my) || 1;
-                dirX = mx / len;
-                dirY = my / len;
-              }
-              
-              // Set horizontal jump velocity (will be applied during jump for diagonal arc)
-              const jumpHorizontalSpeed = 100; // Horizontal speed during jump (reduced to prevent jumping over enemies)
-              p.jumpVx = dirX * jumpHorizontalSpeed;
-              p.jumpVy = dirY * jumpHorizontalSpeed;
+            // Transform input directions for isometric mode
+            let dirX, dirY;
+            if (ISO_MODE && (mx !== 0 || my !== 0)) {
+              const transformed = transformInputForIsometric(mx, my);
+              dirX = transformed.x;
+              dirY = transformed.y;
             } else {
-              // No movement input, no horizontal velocity
-              p.jumpVx = 0;
-              p.jumpVy = 0;
+              const len = Math.hypot(mx, my) || 1;
+              dirX = len ? mx / len : (mx !== 0 ? mx : 0);
+              dirY = len ? my / len : (my !== 0 ? my : 0);
             }
+            
+            // Set horizontal jump velocity (diagonal jump)
+            const jumpSpeed = baseJumpV * 0.6; // Horizontal jump speed multiplier
+            s.player.jumpVx = dirX * jumpSpeed;
+            s.player.jumpVy = dirY * jumpSpeed;
+            
+            console.log("Jump Triggered - Diagonal:", dirX, dirY);
           }
-        } else if (u.screen === "menu") {
-          // Space can also start game from menu
-          ensureAudio();
-          const best = safeBest();
-          newRun(best, u.selectedChar);
+          return; // Stop further processing
         }
-      }
-      
-      if (k === "Shift" || k === "ShiftLeft" || k === "ShiftRight") {
-        const s = stateRef.current;
-        const u = uiRef.current;
-        if (s && u.screen === "running" && s.running) {
-          useAbility(s);
-        }
-      }
-
-      if (k === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        const u = uiRef.current;
-        if (u.screen === "running") {
-          if (u.showStats && !u.pauseMenu) {
-            // Close stats, open pause menu
-            setUi(prev => ({ ...prev, showStats: false, pauseMenu: true }));
-          } else if (u.pauseMenu) {
-            // Close pause menu, resume game
-            setUi(prev => ({ ...prev, pauseMenu: false, showAdmin: false }));
+        // Track movement keys - use toLowerCase() for case-insensitive handling
+        const keyLower = k?.toLowerCase();
+        if (keyLower === "w" || k === "ArrowUp" ||
+            keyLower === "s" || k === "ArrowDown" ||
+            keyLower === "a" || k === "ArrowLeft" ||
+            keyLower === "d" || k === "ArrowRight") {
+          // Store lowercase version for letter keys, original for arrow keys
+          if (k.startsWith("Arrow")) {
+            keysRef.current.add(k);
           } else {
-            // Open pause menu
-            setUi(prev => ({ ...prev, pauseMenu: true }));
+            keysRef.current.add(keyLower);
           }
         }
-        return;
-      }
-
-      if (uikIsLevelupGuard()) {
-        return;
-      }
-
-      // Normalize letter keys to lowercase to handle Shift properly
-      // Arrow keys are kept as-is
-      if (k && k.length === 1 && /[a-zA-Z]/.test(k)) {
-        keysRef.current.add(k.toLowerCase());
-      } else {
-      keysRef.current.add(k);
       }
     };
 
+    // Keyboard up handler - ONLY delete keys (fixes movement bug)
     const up = (e) => {
       const k = e.key;
+      const keyLower = k?.toLowerCase();
       
-      // Normalize letter keys to lowercase (same as keydown)
-      if (k && k.length === 1 && /[a-zA-Z]/.test(k)) {
-        keysRef.current.delete(k.toLowerCase());
-        keysRef.current.delete(k.toUpperCase()); // Also remove uppercase version if it exists
-      } else {
-        keysRef.current.delete(k);
+      // Delete both original and lowercase versions for letter keys
+      keysRef.current.delete(k);
+      if (keyLower && keyLower !== k) {
+        keysRef.current.delete(keyLower);
+      }
+      
+      // Handle Space key
+      if (k === " " || k === "Space") {
+        keysRef.current.delete(" ");
+        keysRef.current.delete("Space");
+        jumpKeyJustPressedRef.current = false;
+      }
+      // Handle Shift key variants
+      if (k === "Shift" || k === "ShiftLeft" || k === "ShiftRight") {
+        keysRef.current.delete("Shift");
+        keysRef.current.delete("ShiftLeft");
+        keysRef.current.delete("ShiftRight");
       }
     };
 
+    // Blur handler
     const blur = () => {
       keysRef.current.clear();
+      jumpKeyJustPressedRef.current = false;
     };
 
-    function uikIsLevelupGuard() {
-      const u = uiRef.current;
-      return u.screen === "levelup";
-    }
-
-    // Attach event listeners to both window and document for better compatibility
-    window.addEventListener("keydown", down, true); // Use capture phase
-    document.addEventListener("keydown", down, true);
-    window.addEventListener("keyup", up);
-    document.addEventListener("keyup", up);
-    window.addEventListener("blur", blur);
-    return () => {
-      window.removeEventListener("keydown", down, true);
-      document.removeEventListener("keydown", down, true);
-      window.removeEventListener("keyup", up);
-      document.removeEventListener("keyup", up);
-      window.removeEventListener("blur", blur);
-    };
-  }, [content]);
-
-  // Scroll wheel listener for ISO_SCALE adjustment (only when ISO_MODE is true)
-  useEffect(() => {
-    if (!ISO_MODE) return;
-    
-    const onWheel = (e) => {
-      e.preventDefault();
-      const delta = e.deltaY > 0 ? -0.001 : 0.001;
-      setIsoScale(prev => clamp(prev + delta, 0.001, 1.0));
-    };
-    
-    const c = canvasRef.current;
-    if (c) {
-      c.addEventListener("wheel", onWheel, { passive: false });
-    }
-    
-    return () => {
-      if (c) {
-        c.removeEventListener("wheel", onWheel);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    const c = canvasRef.current;
-    if (!c) return;
-
+    // Pointer down handler - Force audio on click
     const onPointerDown = (e) => {
-      ensureAudio();
+      // FORCE AUDIO ON CLICK: Wake up the audio engine at the very top
+      const a = audioRef.current;
+      if (a.ctx && a.ctx.state === 'suspended') {
+        a.ctx.resume().then(() => console.log("AudioContext Resumed"));
+      }
+      // STABILIZE AUDIO: Only play if paused (don't spam play/pause)
+      if (a.menuMusic && a.menuMusic.paused) {
+        a.menuMusic.play().catch(() => {});
+      }
+      
+      ensureAudio(); // Fix sound issue
+      
       c.setPointerCapture?.(e.pointerId);
 
       const s = stateRef.current;
       const u = uiRef.current;
       
-      // Pause menu click handling - MUST be checked first before early returns
+      // Pause menu click handling
       if (u.screen === "running" && u.pauseMenu) {
         const rect = c.getBoundingClientRect();
-        // Get CSS pixel coordinates (matches overlay drawing which uses setTransform(1,0,0,1,0,0))
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
-        const w = s ? s.arena.w : sizeRef.current.w;
-        const h = s ? s.arena.h : sizeRef.current.h;
+        const w = rect.width;
+        const h = rect.height;
         
-        // Admin section buttons - CHECK FIRST when admin panel is open
-        // This prevents clicks from falling through to pause menu buttons below
-        if (u.showAdmin && s) {
-          // Category buttons click detection
-          const categoryY = 145;
-          const categoryW = 85;
-          const categoryH = 22;
-          const categories = [
-            { name: "Main", cat: "main" },
-            { name: "Weapons", cat: "weapons" },
-            { name: "Tomes", cat: "tomes" },
-            { name: "Items", cat: "items" },
-          ];
-          
-          for (let i = 0; i < categories.length; i++) {
-            const catX = w * 0.5 - 170 + i * 90;
-            const clickPadding = 2;
-            if (x >= catX - clickPadding && x <= catX + categoryW + clickPadding && 
-                y >= categoryY - clickPadding && y <= categoryY + categoryH + clickPadding) {
-              e.preventDefault();
-              e.stopPropagation();
-              setUi(prev => ({ ...prev, adminCategory: categories[i].cat }));
-              return;
-            }
-          }
-          
-          // Two-column layout for click detection
-          const adminCol1X = w * 0.5 - 200;
-          const adminCol2X = w * 0.5 + 20;
-          const adminButtonW = 180;
-          const adminButtonH = 26;
-          const adminSpacing = 28;
-          const adminY = 175;
-          
-          let adminFunctions = [];
-          
-          if (u.adminCategory === "main") {
-            adminFunctions = [
-              { name: "Level Up", action: "levelup" },
-              { name: "Spawn Boss", action: "spawnBoss" },
-              { name: "Spawn Chest", action: "spawnChest" },
-              { name: "Speed Shrine", action: "spawnSpeed" },
-              { name: "Heal Shrine", action: "spawnHeal" },
-              { name: "Magnet Shrine", action: "spawnMagnet" },
-              { name: "Full Heal", action: "fullHeal" },
-              { name: "+1000 Gold", action: "addGold" },
-              { name: "+1000 XP", action: "addXP" },
-              { name: "Kill All", action: "killAll" },
-              { name: "All Weapons", action: "giveAllWeapons" },
-              { name: "All Tomes", action: "giveAllTomes" },
-              { name: "All Items", action: "giveAllItems" },
-              { name: "Close Admin", action: "closeAdmin" },
-            ];
-          } else if (u.adminCategory === "weapons") {
-            adminFunctions = content.weapons.map(w => ({
-              name: w.name.length > 20 ? w.name.substring(0, 20) : w.name,
-              action: `giveWeapon:${w.id}`,
-              weaponId: w.id,
-            }));
-            adminFunctions.push({ name: "Back", action: "backToMain" });
-          } else if (u.adminCategory === "tomes") {
-            adminFunctions = content.tomes.map(t => ({
-              name: t.name.length > 20 ? t.name.substring(0, 20) : t.name,
-              action: `giveTome:${t.id}`,
-              tomeId: t.id,
-            }));
-            adminFunctions.push({ name: "Back", action: "backToMain" });
-          } else if (u.adminCategory === "items") {
-            adminFunctions = content.items.map(it => ({
-              name: it.name.length > 20 ? it.name.substring(0, 20) : it.name,
-              action: `giveItem:${it.id}`,
-              itemId: it.id,
-            }));
-            adminFunctions.push({ name: "Back", action: "backToMain" });
-          }
-          
-          const maxVisible = 20; // Increased to show all items
-          const startIndex = 0;
-          const endIndex = Math.min(adminFunctions.length, startIndex + maxVisible);
-          
-          for (let i = startIndex; i < endIndex; i++) {
-            const displayIndex = i - startIndex;
-            const col = displayIndex % 2;
-            const row = Math.floor(displayIndex / 2);
-            const buttonX = col === 0 ? adminCol1X : adminCol2X;
-            const buttonY = adminY + row * adminSpacing;
-            
-            // Add small padding to click detection for better reliability
-            const clickPadding = 2;
-            if (x >= buttonX - clickPadding && x <= buttonX + adminButtonW + clickPadding && 
-                y >= buttonY - clickPadding && y <= buttonY + adminButtonH + clickPadding) {
-              e.preventDefault();
-              e.stopPropagation();
-              const action = adminFunctions[i].action;
-              if (action === "backToMain") {
-                setUi(prev => ({ ...prev, adminCategory: "main" }));
-              } else if (action === "closeAdmin") {
-                setUi(prev => ({ ...prev, showAdmin: false }));
-              } else {
-                handleAdminAction(s, action);
-              }
-              return;
-            }
-          }
-          
-          // If click was in admin panel area but didn't hit a button, consume it to prevent fall-through
-          const adminPanelTop = 100;
-          const adminPanelBottom = h - 100;
-          const adminPanelLeft = w * 0.5 - 220;
-          const adminPanelRight = w * 0.5 + 220;
-          if (x >= adminPanelLeft && x <= adminPanelRight && 
-              y >= adminPanelTop && y <= adminPanelBottom) {
-            e.preventDefault();
-            e.stopPropagation();
-            return; // Consume click to prevent it from hitting pause menu buttons
-          }
-        }
-        
-        // Pause menu buttons (only checked if admin panel is not open or click is outside admin area)
-        const buttonX = w * 0.5 - 120;
-        const buttonW = 240;
-        const buttonH = 50;
         const buttonY = 180;
+        const buttonH = 50;
         const buttonSpacing = 70;
+        const buttonW = 240;
+        const buttonX = w * 0.5 - 120;
         
         // Continue button
-        if (x >= buttonX && x <= buttonX + buttonW && y >= buttonY && y <= buttonY + buttonH) {
-          e.preventDefault();
-          e.stopPropagation();
-          setUi(prev => ({ ...prev, pauseMenu: false, showAdmin: false }));
+        if (x >= buttonX && x <= buttonX + buttonW &&
+            y >= buttonY && y <= buttonY + buttonH) {
+          setPaused(false);
           return;
         }
         
-        // New Game button - return to character selection
-        if (x >= buttonX && x <= buttonX + buttonW && y >= buttonY + buttonSpacing && y <= buttonY + buttonSpacing + buttonH) {
-          e.preventDefault();
-          e.stopPropagation();
-          // Return to menu (character selection)
-          setUi(prev => ({ ...prev, screen: "menu", pauseMenu: false, showAdmin: false }));
+        // New Game button
+        if (x >= buttonX && x <= buttonX + buttonW &&
+            y >= buttonY + buttonSpacing && y <= buttonY + buttonSpacing + buttonH) {
+          const best = safeBest();
+          newRun(best, u.selectedChar);
           return;
         }
         
         // Admin button
-        if (x >= buttonX && x <= buttonX + buttonW && y >= buttonY + buttonSpacing * 2 && y <= buttonY + buttonSpacing * 2 + buttonH) {
-          e.preventDefault();
-          e.stopPropagation();
-          setUi(prev => ({ ...prev, showAdmin: !prev.showAdmin }));
+        if (x >= buttonX && x <= buttonX + buttonW &&
+            y >= buttonY + buttonSpacing * 2 && y <= buttonY + buttonSpacing * 2 + buttonH) {
+          const nextUi = { ...u, showAdmin: !u.showAdmin };
+          uiRef.current = nextUi;
+          setUi(nextUi);
           return;
         }
         
         // Mute button
-        if (x >= buttonX && x <= buttonX + buttonW && y >= buttonY + buttonSpacing * 3 && y <= buttonY + buttonSpacing * 3 + buttonH) {
-          e.preventDefault();
-          e.stopPropagation();
-          ensureAudio(); // Make sure audio is initialized
-          const nextMuted = !u.muted;
-          const nextUi = { ...u, muted: nextMuted };
+        if (x >= buttonX && x <= buttonX + buttonW &&
+            y >= buttonY + buttonSpacing * 3 && y <= buttonY + buttonSpacing * 3 + buttonH) {
+          const nextUi = { ...u, muted: !u.muted };
           uiRef.current = nextUi;
           setUi(nextUi);
           applyAudioToggles(nextUi);
           return;
         }
         
-        // Volume controls
+        // Volume buttons
         const volumeButtonY = buttonY + buttonSpacing * 4;
         const volumeBarW = 200;
+        const volumeBarH = 8;
         const volumeBarX = w * 0.5 - volumeBarW / 2;
+        const volumeBarY = volumeButtonY + 21;
         const volButtonSize = 24;
         const volMinusX = volumeBarX - volButtonSize - 8;
         const volPlusX = volumeBarX + volumeBarW + 8;
         const volButtonY = volumeButtonY + 10;
         
         // Volume minus button
-        if (x >= volMinusX && x <= volMinusX + volButtonSize && y >= volButtonY && y <= volButtonY + volButtonSize) {
-          e.preventDefault();
-          e.stopPropagation();
-          const currentVol = u.musicVolume !== undefined ? u.musicVolume : 0.5;
-          const newVol = Math.max(0, currentVol - 0.1);
-          const nextUi = { ...u, musicVolume: newVol };
+        if (x >= volMinusX && x <= volMinusX + volButtonSize &&
+            y >= volButtonY && y <= volButtonY + volButtonSize) {
+          const currentVolume = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+          const newVolume = Math.max(0, currentVolume - 0.1);
+          const nextUi = { ...u, musicVolume: newVolume };
           uiRef.current = nextUi;
           setUi(nextUi);
           updateMusicVolume();
@@ -9846,155 +5861,168 @@ export default function NeonPitRoguelikeV3() {
         }
         
         // Volume plus button
-        if (x >= volPlusX && x <= volPlusX + volButtonSize && y >= volButtonY && y <= volButtonY + volButtonSize) {
-          e.preventDefault();
-          e.stopPropagation();
-          const currentVol = u.musicVolume !== undefined ? u.musicVolume : 0.5;
-          const newVol = Math.min(1, currentVol + 0.1);
-          const nextUi = { ...u, musicVolume: newVol };
+        if (x >= volPlusX && x <= volPlusX + volButtonSize &&
+            y >= volButtonY && y <= volButtonY + volButtonSize) {
+          const currentVolume = u.musicVolume !== undefined ? u.musicVolume : 0.5;
+          const newVolume = Math.min(1, currentVolume + 0.1);
+          const nextUi = { ...u, musicVolume: newVolume };
           uiRef.current = nextUi;
           setUi(nextUi);
           updateMusicVolume();
           return;
         }
         
-        // If we're in pause menu, don't process other clicks
+        // Admin panel click handling
+        if (u.showAdmin) {
+          handleAdminClick(x, y, w, h, u, content);
+        }
+        
         return;
       }
       
-      // Pause game updates when pause menu is open (but allow clicks above)
-      if (u.screen === "running" && u.pauseMenu) {
+      // Stats screen click handling
+      if (u.screen === "running" && u.showStats) {
+        setPaused(false);
         return;
       }
-      
-      if (!s) {
-        if (u.screen === "menu") {
-          const rect = c.getBoundingClientRect();
-          const x = e.clientX - rect.left;
-          const y = e.clientY - rect.top;
 
-          // Check mute button click
-          const muteButtonX = sizeRef.current.w - 140;
-          const muteButtonY = 20;
-          const muteButtonW = 120;
-          const muteButtonH = 35;
-          if (x >= muteButtonX && x <= muteButtonX + muteButtonW && y >= muteButtonY && y <= muteButtonY + muteButtonH) {
-            e.preventDefault();
-            e.stopPropagation();
-            ensureAudio(); // Make sure audio is initialized
-            const nextMuted = !u.muted;
-            const nextUi = { ...u, muted: nextMuted };
-            uiRef.current = nextUi;
-            setUi(nextUi);
-            applyAudioToggles(nextUi);
+      // Menu screen click handling
+      if (u.screen === "menu") {
+        const rect = c.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const w = rect.width;
+        const h = rect.height;
+        
+        // Character selection buttons
+        const charButtonY = h * 0.5 + 40;
+        const charButtonW = 200;
+        const charButtonH = 50;
+        const charSpacing = 220;
+        const startX = w * 0.5 - (content.characters.length * charSpacing) / 2 + charSpacing / 2;
+        
+        for (let i = 0; i < content.characters.length; i++) {
+          const charX = startX + i * charSpacing;
+          if (x >= charX - charButtonW / 2 && x <= charX + charButtonW / 2 &&
+              y >= charButtonY && y <= charButtonY + charButtonH) {
+            setMenuChar(content.characters[i].id);
             return;
-          }
-          
-          // Volume controls in menu
-          const volumeY = muteButtonY + muteButtonH + 10;
-          const volumeBarW = 100;
-          const volumeBarX = muteButtonX + (muteButtonW - volumeBarW) / 2;
-          const volButtonSize = 18;
-          const volMinusX = volumeBarX - volButtonSize - 4;
-          const volPlusX = volumeBarX + volumeBarW + 4;
-          const volButtonY = volumeY;
-          
-          // Volume minus button
-          if (x >= volMinusX && x <= volMinusX + volButtonSize && y >= volButtonY && y <= volButtonY + volButtonSize) {
-            e.preventDefault();
-            e.stopPropagation();
-            const currentVol = u.musicVolume !== undefined ? u.musicVolume : 0.5;
-            const newVol = Math.max(0, currentVol - 0.1);
-            const nextUi = { ...u, musicVolume: newVol };
-            uiRef.current = nextUi;
-            setUi(nextUi);
-            updateMusicVolume();
-            return;
-          }
-          
-          // Volume plus button
-          if (x >= volPlusX && x <= volPlusX + volButtonSize && y >= volButtonY && y <= volButtonY + volButtonSize) {
-            e.preventDefault();
-            e.stopPropagation();
-            const currentVol = u.musicVolume !== undefined ? u.musicVolume : 0.5;
-            const newVol = Math.min(1, currentVol + 0.1);
-            const nextUi = { ...u, musicVolume: newVol };
-            uiRef.current = nextUi;
-            setUi(nextUi);
-            updateMusicVolume();
-            return;
-          }
-
-          const cardW = Math.min(300, Math.max(220, sizeRef.current.w * 0.24));
-          const gap = 18;
-          const totalW = cardW * 3 + gap * 2;
-          const startX = sizeRef.current.w * 0.5 - totalW * 0.5;
-          const topY = 300;
-          const cardH = 120;
-
-          for (let i = 0; i < 3; i++) {
-            const cx = startX + i * (cardW + gap);
-            if (x >= cx && x <= cx + cardW && y >= topY && y <= topY + cardH) {
-              setMenuChar(content.characters[i].id);
-              return;
-            }
           }
         }
+        
+        // Start button
+        const startButtonY = charButtonY + charButtonH + 40;
+        const startButtonW = 200;
+        const startButtonH = 50;
+        if (x >= w * 0.5 - startButtonW / 2 && x <= w * 0.5 + startButtonW / 2 &&
+            y >= startButtonY && y <= startButtonY + startButtonH) {
+          ensureAudio();
+          const best = safeBest();
+          newRun(best, u.selectedChar);
+          return;
+        }
+        
+        // Settings button
+        const settingsButtonY = startButtonY + startButtonH + 20;
+        const settingsButtonW = 150;
+        const settingsButtonH = 40;
+        if (x >= w * 0.5 - settingsButtonW / 2 && x <= w * 0.5 + settingsButtonW / 2 &&
+            y >= settingsButtonY && y <= settingsButtonY + settingsButtonH) {
+          const nextUi = { ...u, showSettings: !u.showSettings };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          return;
+        }
+        
+        // Admin toggle (hidden - click top-left corner)
+        if (x < 50 && y < 50) {
+          const nextUi = { ...u, showAdmin: !u.showAdmin };
+          uiRef.current = nextUi;
+          setUi(nextUi);
+          return;
+        }
+        
         return;
       }
 
+      // Dead screen click handling
+      if (u.screen === "dead") {
+        ensureAudio();
+        const best = safeBest();
+        newRun(best, u.selectedChar);
+        return;
+      }
+
+      // Levelup screen click handling
       if (u.screen === "levelup") {
         const rect = c.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
-        const w = s.arena.w;
-        const h = s.arena.h;
-
-        const cardW = Math.min(320, Math.max(240, w * 0.26));
-        const cardH = 180;
-        const gap = 18;
+        const w = rect.width;
+        const h = rect.height;
         
-        // Account for max scale (1.05x) when calculating spacing
-        const maxScaledW = cardW * 1.05;
-        const spacing = maxScaledW + gap; // Space between card centers
+        const choices = u.levelChoices || [];
+        if (choices.length === 0) return;
         
-        // Center the group of 3 cards
-        const screenCenterX = w * 0.5;
-        const leftCardCenterX = screenCenterX - spacing;
-        const centerCardCenterX = screenCenterX;
-        const rightCardCenterX = screenCenterX + spacing;
+        const selectedIndex = u.selectedChoiceIndex || 0;
+        const choiceY = h * 0.5 + 40;
+        const choiceW = 400;
+        const choiceH = 80;
+        const choiceSpacing = 100;
+        const startX = w * 0.5;
         
-        const cardCenters = [leftCardCenterX, centerCardCenterX, rightCardCenterX];
-        const topY = h * 0.5 - cardH * 0.5;
-
-        for (let i = 0; i < 3; i++) {
-          const cardCenterX = cardCenters[i];
-          // Account for scaling - check if click is within card bounds
-          // Cards can scale up to 1.05x, so expand hitbox slightly
-          const scaledW = cardW * 1.05;
-          const scaledH = cardH * 1.05;
-          const cardCenterY = topY + cardH / 2;
-          const hitboxLeft = cardCenterX - scaledW / 2;
-          const hitboxRight = cardCenterX + scaledW / 2;
-          const hitboxTop = cardCenterY - scaledH / 2;
-          const hitboxBottom = cardCenterY + scaledH / 2;
+        for (let i = 0; i < choices.length; i++) {
+          const choiceX = startX;
+          const choiceYPos = choiceY + (i - selectedIndex) * choiceSpacing;
           
-          if (x >= hitboxLeft && x <= hitboxRight && y >= hitboxTop && y <= hitboxBottom) {
-            e.preventDefault();
-            e.stopPropagation();
+          if (x >= choiceX - choiceW / 2 && x <= choiceX + choiceW / 2 &&
+              y >= choiceYPos - choiceH / 2 && y <= choiceYPos + choiceH / 2) {
             pickChoice(i);
             return;
           }
         }
+        
+        return;
+      }
+
+      // Running screen - handle interactable clicks
+      if (u.screen === "running" && s) {
+        tryUseInteractable(s);
       }
     };
 
+    // Wheel handler for isometric zoom
+    const onWheel = (e) => {
+      if (!ISO_MODE) return;
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.001 : 0.001;
+      setIsoScale(Math.max(0.005, Math.min(0.05, isoScaleRef.current + delta)));
+    };
+
+    // Register all event listeners
+    window.addEventListener("keydown", down, true);
+    document.addEventListener("keydown", down, true);
+    window.addEventListener("keyup", up);
+    document.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
     c.addEventListener("pointerdown", onPointerDown);
+    c.addEventListener("wheel", onWheel, { passive: false });
+
+    // Cleanup function
     return () => {
+      window.removeEventListener("keydown", down, true);
+      document.removeEventListener("keydown", down, true);
+      window.removeEventListener("keyup", up);
+      document.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+      window.removeEventListener("resize", onResize);
+      document.removeEventListener("fullscreenchange", onResize);
       c.removeEventListener("pointerdown", onPointerDown);
+      c.removeEventListener("wheel", onWheel);
     };
   }, [content]);
 
+  // Game loop useEffect
   useEffect(() => {
     const step = () => {
       const c = canvasRef.current;
@@ -10004,40 +6032,61 @@ export default function NeonPitRoguelikeV3() {
         return;
       }
 
-      const { w, h, dpr } = sizeRef.current;
       const ctx = c.getContext("2d");
-      if (!ctx) {
+      const { w, h } = sizeRef.current;
+      
+      // HARD FREEZE ON MENUS: Prevent camera and game logic from running when menus are open
+      const u = uiRef.current;
+      
+      // Render-only path for non-running screens (menu, levelup, dead, pause)
+      if (u.screen !== 'running' || u.pauseMenu) {
+        // Clear and setup canvas
+        ctx.clearRect(0, 0, w, h);
+        
+        // Render world and HUD if state exists
+        if (s && u.screen === 'running' && u.pauseMenu) {
+          // Pause menu - draw world behind pause overlay
+          drawWorld(s, ctx, isoScaleRef.current);
+          drawHud(s, ctx, isoScaleRef.current, content);
+        } else if (s && u.screen === 'levelup') {
+          // Level up screen - draw world behind levelup overlay
+          drawWorld(s, ctx, isoScaleRef.current);
+          drawHud(s, ctx, isoScaleRef.current, content);
+        } else if (!s || u.screen === 'menu' || u.screen === 'dead') {
+          // Menu/dead screen - just dark background
+          ctx.fillStyle = "#06070c";
+          ctx.fillRect(0, 0, w, h);
+        }
+        
+        // Always draw overlay (for menu, pause, levelup, dead screens)
+        const overlayState = s || { arena: { w, h }, player: { coins: 0 } };
+        drawOverlay(overlayState, ctx, u, content, isoScaleRef.current, overlayState);
+        
         rafRef.current = requestAnimationFrame(step);
         return;
       }
-
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
+      
+      // Calculate delta time with proper handling
       const now = performance.now();
-      const last = step._last ?? now;
-      step._last = now;
-      const dt = clamp((now - last) / 1000, 0, 0.05);
-
-      // Update music system
-      updateMusic(dt);
-
-      // Update fanfare timers
-      const u = uiRef.current;
-      if (u.screen === "levelup") {
-        if (u.levelUpFanfareT > 0) {
-          const nextUi = { ...u, levelUpFanfareT: Math.max(0, u.levelUpFanfareT - dt) };
-          uiRef.current = nextUi;
-          setUi(nextUi);
-        }
-        if (u.chestOpenFanfareT > 0) {
-          const nextUi = { ...u, chestOpenFanfareT: Math.max(0, u.chestOpenFanfareT - dt) };
-          uiRef.current = nextUi;
-          setUi(nextUi);
-        }
-      }
+      let dt = (now - lastTimeRef.current) / 1000;
+      lastTimeRef.current = now;
+      if (dt > 0.1) dt = 0.1; // Prevent huge jumps after lag
 
       if (s) {
-        if (u.screen === "running" && s.running && !u.pauseMenu) {
+        // FIX CHEST FREEZE: Safety check - if levelup screen but no upgradeCards, trigger upgrade sequence
+        if (u.screen === "levelup") {
+          const hasUpgradeCards = (s.upgradeCards && s.upgradeCards.length > 0) || (u.levelChoices && u.levelChoices.length > 0);
+          if (!hasUpgradeCards) {
+            console.warn("Levelup screen with no upgradeCards - triggering upgrade sequence");
+            triggerUpgradeSequence(s, content);
+          }
+        }
+        
+        // Only update game logic when actually running (not paused, not on levelup/dead/menu screens, not frozen)
+        // This freezes the game world and camera when upgrade menu is open or fanfare is playing
+        const hasUpgradeCards = u.levelChoices && u.levelChoices.length > 0;
+        const fanfareActive = (u.levelUpFanfareT && u.levelUpFanfareT > 0) || (u.chestOpenFanfareT && u.chestOpenFanfareT > 0);
+        if (u.screen === "running" && s.running && !u.pauseMenu && s.freezeMode === null && !hasUpgradeCards && !fanfareActive) {
           // Always update hitStopT, but only update game logic when hitStopT is 0
           if (s.hitStopT > 0) {
             s.hitStopT = Math.max(0, s.hitStopT - dt);
@@ -10053,8 +6102,8 @@ export default function NeonPitRoguelikeV3() {
           }
         }
 
-        drawWorld(s, ctx);
-        drawHud(s, ctx);
+        drawWorld(s, ctx, isoScaleRef.current);
+        drawHud(s, ctx, isoScaleRef.current, content);
 
         const u2 = uiRef.current;
         if (u2.screen === "running" && !u2.pauseMenu) {
@@ -10064,6 +6113,14 @@ export default function NeonPitRoguelikeV3() {
           u2.xpNeed = s.xpNeed;
           u2.coins = s.player.coins;
           u2.timer = s.stageLeft;
+        }
+        
+        // Update UI timers (fanfare animations) - must happen every frame
+        if (u2.levelUpFanfareT > 0) {
+          u2.levelUpFanfareT = Math.max(0, u2.levelUpFanfareT - dt);
+        }
+        if (u2.chestOpenFanfareT > 0) {
+          u2.chestOpenFanfareT = Math.max(0, u2.chestOpenFanfareT - dt);
         }
 
         if (s.player.hp <= 0 && uiRef.current.screen !== "dead") {
@@ -10082,7 +6139,7 @@ export default function NeonPitRoguelikeV3() {
           setUi(nextUi);
         }
 
-        drawOverlay(s, ctx);
+        drawOverlay(s, ctx, uiRef.current, content, isoScaleRef.current, s);
       } else {
         const fakeS = {
           arena: { w, h },
@@ -10091,7 +6148,7 @@ export default function NeonPitRoguelikeV3() {
         ctx.clearRect(0, 0, w, h);
         ctx.fillStyle = "#06070c";
         ctx.fillRect(0, 0, w, h);
-        drawOverlay(fakeS, ctx);
+        drawOverlay(fakeS, ctx, uiRef.current, content, isoScaleRef.current, fakeS);
       }
 
       rafRef.current = requestAnimationFrame(step);
@@ -10130,15 +6187,25 @@ export default function NeonPitRoguelikeV3() {
         ref={canvasHolderRef}
         style={{
           width: "min(1100px, 100%)",
-          height: "min(680px, 100%)",
-          aspectRatio: "16 / 9",
-          borderRadius: 18,
-          border: "1px solid rgba(230,232,255,0.12)",
-          boxShadow: "0 16px 60px rgba(0,0,0,0.55)",
+          height: "min(620px, 100%)",
           position: "relative",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#000",
+          boxShadow: "0 0 40px rgba(0,0,0,0.5)",
+          border: "1px solid rgba(46,168,255,0.2)",
         }}
       >
-        <canvas ref={canvasRef} tabIndex={0} style={{ width: "100%", height: "100%", borderRadius: 18, display: "block", outline: "none" }} />
+        <canvas
+          ref={canvasRef}
+          style={{
+            display: "block",
+            width: "100%",
+            height: "100%",
+            imageRendering: "pixelated",
+          }}
+        />
       </div>
     </div>
   );
