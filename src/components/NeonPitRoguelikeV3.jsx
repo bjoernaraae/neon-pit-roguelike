@@ -5253,6 +5253,25 @@ export default function NeonPitRoguelikeV3() {
     const col = RARITY_COLOR[c.rarity] || RARITY_COLOR[RARITY.COMMON];
     pushCombatText(s, p.x, p.y - 30, c.name.toUpperCase(), col.bg, { size: 18, life: 1.5 });
 
+    // FIX CAMERA SHIFT: Snap camera to player position before resuming game
+    // This prevents the camera from lerping/jumping when transitioning from levelup to running
+    const { w, h } = s.arena;
+    if (ISO_MODE) {
+      s.camera.x = p.x;
+      s.camera.y = p.y;
+    } else {
+      const targetX = p.x - w / 2;
+      const targetY = p.y - h / 2;
+      s.camera.x = targetX;
+      s.camera.y = targetY;
+      
+      // Clamp to level bounds
+      if (s.levelData) {
+        s.camera.x = clamp(s.camera.x, 0, Math.max(0, s.levelData.w - w));
+        s.camera.y = clamp(s.camera.y, 0, Math.max(0, s.levelData.h - h));
+      }
+    }
+
     s.running = true;
     s.freezeMode = null;
 
@@ -6048,7 +6067,6 @@ export default function NeonPitRoguelikeV3() {
           ctx.fillRect(0, 0, w, h);
           
           // 3. IMMEDIATELY draw upgrade cards in SCREEN COORDINATES (w/2, h/2)
-          console.log("Drawing levelup overlay - UI choices:", u.levelChoices?.length || 0);
           drawOverlay(s, ctx, u, content, isoScaleRef.current, s);
         } else if (!s || u.screen === 'menu' || u.screen === 'dead') {
           // Menu/dead screen - dark background then overlay

@@ -681,8 +681,6 @@ export function drawOverlay(s, ctx, ui, content, isoScale, state) {
     const choices = ui.levelChoices || [];
     const selectedIndex = ui.selectedChoiceIndex || 0;
     
-    console.log("LEVELUP SCREEN RENDERING - Choices:", choices.length, "Has choices:", choices.length > 0, "Fanfare:", ui.levelUpFanfareT);
-    
     // ALWAYS show choices - fanfare should not block cards (FIXED)
     const showChoices = true;
     
