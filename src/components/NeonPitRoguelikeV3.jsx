@@ -5253,24 +5253,8 @@ export default function NeonPitRoguelikeV3() {
     const col = RARITY_COLOR[c.rarity] || RARITY_COLOR[RARITY.COMMON];
     pushCombatText(s, p.x, p.y - 30, c.name.toUpperCase(), col.bg, { size: 18, life: 1.5 });
 
-    // FIX CAMERA SHIFT: Snap camera to player position before resuming game
-    // This prevents the camera from lerping/jumping when transitioning from levelup to running
-    const { w, h } = s.arena;
-    if (ISO_MODE) {
-      s.camera.x = p.x;
-      s.camera.y = p.y;
-    } else {
-      const targetX = p.x - w / 2;
-      const targetY = p.y - h / 2;
-      s.camera.x = targetX;
-      s.camera.y = targetY;
-      
-      // Clamp to level bounds
-      if (s.levelData) {
-        s.camera.x = clamp(s.camera.x, 0, Math.max(0, s.levelData.w - w));
-        s.camera.y = clamp(s.camera.y, 0, Math.max(0, s.levelData.h - h));
-      }
-    }
+    // CRITICAL: Clear upgrade cards from state so camera can resume following player
+    s.upgradeCards = [];
 
     s.running = true;
     s.freezeMode = null;
