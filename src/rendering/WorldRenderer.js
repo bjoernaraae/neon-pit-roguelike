@@ -960,13 +960,26 @@ export function drawWorld(s, ctx, isoScale) {
     const playerZ = p.z || 0;
     const playerIso = worldToIso(p.x, p.y, playerZ, scale);
     const camIso = worldToIso(cam.x, cam.y, 0, scale);
+    const screenX = w / 2 + playerIso.x - camIso.x;
+    const screenY = h / 2 + playerIso.y - camIso.y;
+    
+    // DEBUG: Log rendering positions
+    if (s._debugCameraUntil && s.t < s._debugCameraUntil) {
+      console.log("RENDER - Player world:", p.x.toFixed(1), p.y.toFixed(1),
+                  "Camera world:", cam.x.toFixed(1), cam.y.toFixed(1),
+                  "Player iso:", playerIso.x.toFixed(1), playerIso.y.toFixed(1),
+                  "Cam iso:", camIso.x.toFixed(1), camIso.y.toFixed(1),
+                  "Screen:", screenX.toFixed(1), screenY.toFixed(1),
+                  "Arena:", w, h);
+    }
+    
     entities.push({
       type: 'player',
       entity: p,
       isoY: playerIso.y,
       color: p.iFrames > 0 ? "#9cffd6" : "#2ea8ff",
-      screenX: w / 2 + playerIso.x - camIso.x,
-      screenY: h / 2 + playerIso.y - camIso.y,
+      screenX: screenX,
+      screenY: screenY,
       z: playerZ,
     });
     
