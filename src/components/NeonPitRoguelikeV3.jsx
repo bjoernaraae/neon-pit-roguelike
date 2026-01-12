@@ -2290,10 +2290,8 @@ export default function NeonPitRoguelikeV3() {
     const c = content.characters.find((x) => x.id === charId) || content.characters[0];
     const base = createPlayerWithCharacter(c, w, h);
     
-    // Add any additional runtime properties not in characterData.js
-    // (Most properties are now defined in characterData.js)
-    if (stats.sizeMult != null) base.sizeMult = stats.sizeMult;
-    if (stats.armor != null) base.armor = stats.armor;
+    // All character stat overrides are handled in createPlayerWithCharacter
+    // Just apply starting weapon and character metadata
 
     const wDef = content.weapons.find((ww) => ww.id === c.startWeapon);
     if (wDef) {
