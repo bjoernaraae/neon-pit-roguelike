@@ -963,14 +963,16 @@ export function drawWorld(s, ctx, isoScale) {
     const screenX = w / 2 + playerIso.x - camIso.x;
     const screenY = h / 2 + playerIso.y - camIso.y;
     
-    // DEBUG: Log rendering positions
-    if (s._debugCameraUntil && s.t < s._debugCameraUntil) {
+    // DEBUG: Log rendering positions (only once per debug session)
+    if (s._debugCameraUntil && s.t < s._debugCameraUntil && !s._cameraDebugLogged) {
       console.log("RENDER - Player world:", p.x.toFixed(1), p.y.toFixed(1),
                   "Camera world:", cam.x.toFixed(1), cam.y.toFixed(1),
                   "Player iso:", playerIso.x.toFixed(1), playerIso.y.toFixed(1),
                   "Cam iso:", camIso.x.toFixed(1), camIso.y.toFixed(1),
                   "Screen:", screenX.toFixed(1), screenY.toFixed(1),
-                  "Arena:", w, h);
+                  "Arena:", w, h,
+                  "Center:", (w/2).toFixed(1), (h/2).toFixed(1));
+      s._cameraDebugLogged = true;
     }
     
     entities.push({

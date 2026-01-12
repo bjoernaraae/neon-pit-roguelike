@@ -5345,6 +5345,7 @@ export default function NeonPitRoguelikeV3() {
     
     // Enable camera debug logging for 3 seconds after levelup
     s._debugCameraUntil = s.t + 3.0;
+    s._cameraDebugLogged = false; // Reset debug flag
 
     s.running = true;
     s.freezeMode = null;
