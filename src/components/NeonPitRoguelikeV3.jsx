@@ -5370,10 +5370,11 @@ export default function NeonPitRoguelikeV3() {
             return nextUi;
           });
         }
-        return;
+        return; // ONLY return for ESC key
       }
       
-      console.log("Key pressed:", e.key);
+      // Log all other keys for debugging
+      console.log("Key pressed:", e.key, "Screen:", uiRef.current.screen);
       const k = e.key;
       const u = uiRef.current;
 
@@ -5502,14 +5503,16 @@ export default function NeonPitRoguelikeV3() {
           if (newCharId) setMenuChar(newCharId);
           return;
         }
-        // E or Enter to start
+        // E or Enter to start game with selected character
         if (k === "e" || k === "E" || k === "Enter") {
           e.preventDefault();
+          console.log("E pressed on menu - Starting game with character:", u.selectedChar);
           ensureAudio();
           const best = safeBest();
           newRun(best, u.selectedChar);
           return;
         }
+        return; // Consume all other keys on menu screen
       }
 
       // Dead screen - E to restart
