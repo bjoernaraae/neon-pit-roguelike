@@ -3,14 +3,16 @@
 **Last Updated**: January 12, 2026 - After major bug fixes
 **File Size**: ~6170 lines
 
-## 🎉 Recent Fixes (January 12, 2026)
+## 🎉 Recent Fixes (January 12-13, 2026)
 - ✅ **No menu/battle music playing**: Added `updateMusic()` call in main game loop
 - ✅ **Volume buttons not working**: Implemented `handleAdminClick()` function for pause menu
 - ✅ **A/D character selection reversed**: Fixed modulo logic (A now moves right, D moves left)
 - ✅ **Jump height too low**: Adjusted `jumpV` to 160.0 and restored gravity to 800 * dt
-- ✅ **No upgrade cards visible**: Removed fanfare blocking logic in HudRenderer.js
+- ✅ **No upgrade cards visible**: Fixed fanfare timer countdown in render-only path
 - ✅ **Pause menu admin/volume missing**: Restored full admin panel functionality
 - ✅ **Chest purchase freezes game**: Fixed upgrade card rendering to always show cards
+- ✅ **Console spam from debug logs**: Removed debug console.log statements
+- ✅ **Camera shifts when selecting card**: Camera now snaps to player position before resuming game
 
 ## ✅ Issues Already Fixed
 
