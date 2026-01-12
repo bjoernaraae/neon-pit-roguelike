@@ -2161,6 +2161,26 @@ export default function NeonPitRoguelikeV3() {
     
     sfxLevelUp(); // Use same sound as level up
     
+    // FIX CAMERA: Center camera on player BEFORE entering levelup screen
+    // This prevents the off-center camera issue when the levelup overlay appears
+    const p = s.player;
+    const { w, h } = s.arena;
+    if (ISO_MODE) {
+      s.camera.x = p.x;
+      s.camera.y = p.y;
+    } else {
+      const targetX = p.x - w / 2;
+      const targetY = p.y - h / 2;
+      s.camera.x = targetX;
+      s.camera.y = targetY;
+      
+      // Clamp to level bounds
+      if (s.levelData) {
+        s.camera.x = clamp(s.camera.x, 0, Math.max(0, s.levelData.w - w));
+        s.camera.y = clamp(s.camera.y, 0, Math.max(0, s.levelData.h - h));
+      }
+    }
+    
     // CRITICAL: Set s.upgradeCards and ui.screen = 'levelup' immediately
     if (!s.upgradeCards) s.upgradeCards = [];
     s.upgradeCards = rolled.choices; // Store upgrade cards in state
@@ -2502,6 +2522,25 @@ export default function NeonPitRoguelikeV3() {
       for (const choice of choices) {
         if (rarityOrder[choice.rarity] > rarityOrder[highestRarity]) {
           highestRarity = choice.rarity;
+        }
+      }
+      
+      // FIX CAMERA: Center camera on player BEFORE entering levelup screen
+      // This prevents the off-center camera issue when the levelup overlay appears
+      const { w, h } = s.arena;
+      if (ISO_MODE) {
+        s.camera.x = p.x;
+        s.camera.y = p.y;
+      } else {
+        const targetX = p.x - w / 2;
+        const targetY = p.y - h / 2;
+        s.camera.x = targetX;
+        s.camera.y = targetY;
+        
+        // Clamp to level bounds
+        if (s.levelData) {
+          s.camera.x = clamp(s.camera.x, 0, Math.max(0, s.levelData.w - w));
+          s.camera.y = clamp(s.camera.y, 0, Math.max(0, s.levelData.h - h));
         }
       }
       
