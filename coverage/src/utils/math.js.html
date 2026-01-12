@@ -23,30 +23,30 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">100% </span>
+                <span class="strong">88.46% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>52/52</span>
+                <span class='fraction'>46/52</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
                 <span class="strong">100% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>5/5</span>
+                <span class='fraction'>0/0</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">100% </span>
+                <span class="strong">0% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>5/5</span>
+                <span class='fraction'>0/5</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">100% </span>
+                <span class="strong">88.46% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>52/52</span>
+                <span class='fraction'>46/52</span>
             </div>
         
             
@@ -154,10 +154,10 @@
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">3x</span>
-<span class="cline-any cline-yes">3x</span>
-<span class="cline-any cline-yes">3x</span>
-<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
@@ -165,8 +165,8 @@
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">4x</span>
-<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">/**
  * Math utility functions
  */
@@ -178,7 +178,7 @@
  * @param {number} b - Maximum value
  * @returns {number} Clamped value
  */
-export const clamp = (v, a, b) =&gt; Math.max(a, Math.min(b, v));
+export const clamp = <span class="fstat-no" title="function not covered" >(v, a, b) =&gt; Math.max(a, Math.min(b, v));</span>
 &nbsp;
 /**
  * Linear interpolation between two values
@@ -187,7 +187,7 @@ export const clamp = (v, a, b) =&gt; Math.max(a, Math.min(b, v));
  * @param {number} t - Interpolation factor (0-1)
  * @returns {number} Interpolated value
  */
-export const lerp = (a, b, t) =&gt; a + (b - a) * t;
+export const lerp = <span class="fstat-no" title="function not covered" >(a, b, t) =&gt; a + (b - a) * t;</span>
 &nbsp;
 /**
  * Random number between a and b
@@ -195,7 +195,7 @@ export const lerp = (a, b, t) =&gt; a + (b - a) * t;
  * @param {number} b - Maximum value
  * @returns {number} Random value
  */
-export const rand = (a, b) =&gt; a + Math.random() * (b - a);
+export const rand = <span class="fstat-no" title="function not covered" >(a, b) =&gt; a + Math.random() * (b - a);</span>
 &nbsp;
 /**
  * Squared distance between two points
@@ -205,20 +205,20 @@ export const rand = (a, b) =&gt; a + Math.random() * (b - a);
  * @param {number} by - Second point y
  * @returns {number} Squared distance
  */
-export const dist2 = (ax, ay, bx, by) =&gt; {
-  const dx = ax - bx;
-  const dy = ay - by;
-  return dx * dx + dy * dy;
-};
+export const dist2 = <span class="fstat-no" title="function not covered" >(ax, ay, bx, by) =&gt; {</span>
+<span class="cstat-no" title="statement not covered" >  const dx = ax - bx;</span>
+<span class="cstat-no" title="statement not covered" >  const dy = ay - by;</span>
+<span class="cstat-no" title="statement not covered" >  return dx * dx + dy * dy;</span>
+<span class="cstat-no" title="statement not covered" >};</span>
 &nbsp;
 /**
  * Format a number with locale string
  * @param {number} n - Number to format
  * @returns {string} Formatted number string
  */
-export function format(n) {
-  return n.toLocaleString('en-US', { maximumFractionDigits: 0 });
-}
+export <span class="fstat-no" title="function not covered" >function format(n) {</span>
+<span class="cstat-no" title="statement not covered" >  return n.toLocaleString('en-US', { maximumFractionDigits: 0 });</span>
+<span class="cstat-no" title="statement not covered" >}</span>
 &nbsp;</pre></td></tr></table></pre>
 
                 <div class='push'></div><!-- for sticky footer -->
@@ -226,7 +226,7 @@ export function format(n) {
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2026-01-08T20:10:58.054Z
+                at 2026-01-12T22:44:47.140Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

@@ -902,100 +902,58 @@ export default function NeonPitRoguelikeV3() {
       y = rand(padding, levelH - padding);
     }
 
-    // Enemy types based on floor - introduce new enemies at certain floors
-    const tierWeights = [
-      { w: 74, t: "grunt" },
-      { w: 16, t: "brute" },
-    ];
-    
-    // Runner appears starting floor 3
-    if (s.floor >= 3) {
-      tierWeights.push({ w: Math.max(0, -6 + s.floor * 1.2), t: "runner" });
-    }
-    
-    // Spitter appears starting floor 5
-    if (s.floor >= 5) {
-      tierWeights.push({ w: Math.max(0, -10 + s.floor * 1.1), t: "spitter" });
-    }
-    
-    // Shocker appears starting floor 7 (new enemy type - electric)
-    if (s.floor >= 7) {
-      tierWeights.push({ w: Math.max(0, -8 + s.floor * 0.8), t: "shocker" });
-    }
-    
-    // Tank appears starting floor 9 (new enemy type - slow but tanky)
-    if (s.floor >= 9) {
-      tierWeights.push({ w: Math.max(0, -5 + s.floor * 0.6), t: "tank" });
-    }
-    
+    // Get enemy tier weights based on current floor (from enemyData.js)
+    const tierWeights = getEnemyTierWeights(s.floor);
     const tier = pickWeighted(tierWeights).t;
 
-    // Determine if this is an elite enemy (5% chance, higher on later floors)
-    const eliteChance = 0.05 + (s.floor - 1) * 0.01;
+    // Determine if this is an elite enemy (using ELITE_CONFIG from enemyData.js)
+    const eliteChance = ELITE_CONFIG.BASE_CHANCE + (s.floor - 1) * ELITE_CONFIG.FLOOR_SCALING;
     const isElite = Math.random() < eliteChance;
     
-    // Golden elite (1% chance, scales with floor) - drops extra gold
-    const goldenEliteChance = 0.01 + (s.floor - 1) * 0.005;
+    // Golden elite (drops extra gold)
+    const goldenEliteChance = ELITE_CONFIG.GOLDEN_BASE_CHANCE + (s.floor - 1) * ELITE_CONFIG.GOLDEN_FLOOR_SCALING;
     const isGoldenElite = isElite && Math.random() < goldenEliteChance;
 
-    const baseHp = tier === "brute" ? 110 : tier === "runner" ? 56 : tier === "spitter" ? 64 : tier === "shocker" ? 72 : tier === "tank" ? 180 : 60;
-    // Reduced enemy speeds by ~50% total for slower-paced gameplay
-    const baseSp = tier === "brute" ? 47 : tier === "runner" ? 113 : tier === "spitter" ? 59 : tier === "shocker" ? 69 : tier === "tank" ? 34 : 74;
-    const r = tier === "brute" ? 18 : tier === "runner" ? 12 : tier === "spitter" ? 15 : tier === "shocker" ? 14 : tier === "tank" ? 22 : 14;
+    // Get base stats from enemyData.js
+    const stats = ENEMY_BASE_STATS[tier];
+    const baseHp = stats.hp;
+    const baseSp = stats.speed;
+    const r = stats.radius;
 
-    // Elite enemies are much tougher: 3x HP, 1.4x size, 1.5x speed, damage reduction
-    const hpMult = isElite ? 3.0 : 1.0;
-    const sizeMult = isElite ? 1.4 : 1.0;
-    const speedMult = isElite ? 1.5 : 1.0;
+    // Elite enemies are much tougher (using ELITE_CONFIG multipliers)
+    const hpMult = isElite ? ELITE_CONFIG.HP_MULTIPLIER : 1.0;
+    const sizeMult = isElite ? ELITE_CONFIG.SIZE_MULTIPLIER : 1.0;
+    const speedMult = isElite ? ELITE_CONFIG.SPEED_MULTIPLIER : 1.0;
     const finalHp = Math.round(baseHp * hpMult);
     const finalR = r * sizeMult;
     const finalSpeed = baseSp * speedMult;
     
-    // Elite special abilities and weaknesses
+    // Elite special abilities and weaknesses (from enemyData.js)
     let eliteAbility = null;
     let eliteWeakness = null;
     let eliteArmor = 0; // Damage reduction (0-1)
     
     if (isElite) {
-      // Random elite ability
-      const abilityRoll = Math.random();
-      if (abilityRoll < 0.25) {
-        eliteAbility = "regeneration"; // Heals over time
-      } else if (abilityRoll < 0.5) {
-        eliteAbility = "shield"; // Damage reduction
-        eliteArmor = 0.3; // 30% damage reduction
-      } else if (abilityRoll < 0.75) {
-        eliteAbility = "teleport"; // Can teleport/dash
-      } else {
-        eliteAbility = "rage"; // Gets faster and stronger as HP drops
-      }
+      eliteAbility = getRandomEliteAbility();
+      eliteWeakness = getRandomEliteWeakness();
       
-      // Random weakness (takes extra damage from certain sources)
-      const weaknessRoll = Math.random();
-      if (weaknessRoll < 0.33) {
-        eliteWeakness = "fire"; // Weak to fire/burn damage
-      } else if (weaknessRoll < 0.66) {
-        eliteWeakness = "poison"; // Weak to poison damage
-      } else {
-        eliteWeakness = "melee"; // Weak to melee attacks
+      if (eliteAbility === "shield") {
+        eliteArmor = ELITE_CONFIG.ARMOR.SHIELD; // 30% damage reduction
       }
     }
 
-    // Coin calculation: base 2 for normal mobs, scales with HP
-    // Elite enemies give more, golden elites give even more
-    let baseCoin = 2;
-    if (tier === "brute") baseCoin = 3;
-    else if (tier === "tank") baseCoin = 4;
+    // Coin calculation: base coin from enemyData.js, scales with HP
+    let baseCoin = stats.baseCoin;
     
     // Scale coin with HP (harder enemies = more gold)
-    const coinFromHp = Math.round(finalHp / 40); // Reduced from 30 - 1 coin per 40 HP (less gold)
+    const coinFromHp = Math.round(finalHp / 40); // 1 coin per 40 HP
     let finalCoin = baseCoin + coinFromHp;
     
     if (isElite) {
-      finalCoin = Math.round(finalCoin * 2.5); // Elites give 2.5x base
+      finalCoin = Math.round(finalCoin * ELITE_CONFIG.COIN_MULTIPLIER); // Elites give 2.5x base
     }
     if (isGoldenElite) {
-      finalCoin = Math.round(finalCoin * 3); // Golden elites give 3x more
+      finalCoin = Math.round(finalCoin * ELITE_CONFIG.GOLDEN_COIN_MULTIPLIER); // Golden elites give 3x more
     }
     
     // Reduce gold gain by 50%
@@ -1020,7 +978,7 @@ export default function NeonPitRoguelikeV3() {
       hitT: 0,
       spitT: 0,
       phase: rand(0, Math.PI * 2),
-      xp: Math.round((tier === "brute" ? 7 : tier === "spitter" ? 6 : tier === "runner" ? 5 : tier === "shocker" ? 6 : tier === "tank" ? 8 : 4) * p.difficultyTome * (isElite ? 2 : 1)),
+      xp: Math.round(stats.xp * p.difficultyTome * (isElite ? ELITE_CONFIG.XP_MULTIPLIER : 1)),
       coin: finalCoin,
       poisonT: 0,
       poisonDps: 0,
@@ -2326,86 +2284,12 @@ export default function NeonPitRoguelikeV3() {
   }
 
   function makePlayer(charId, w, h) {
+    // Use createPlayerWithCharacter from characterData.js
     const c = content.characters.find((x) => x.id === charId) || content.characters[0];
-
-    const base = {
-      x: w * 0.5,
-      y: h * 0.55,
-      r: 14,
-
-      speedBase: 75, // Reduced for slower-paced gameplay and harder enemy encounters
-      speedBonus: 0,
-
-      hp: 100,
-      maxHp: 100,
-      regen: 0,
-
-      xpGain: 1,
-      luck: 0,
-      difficultyTome: 1,
-
-      goldGain: 1,
-
-      sizeMult: 1,
-      projectileSpeed: 1,
-
-      critChance: 0,
-      armor: 0,
-      evasion: 0,
-      knockback: 0,
-      thorns: 0,
-      lifesteal: 0,
-      iFrameOnHit: 0,
-      bigBonkChance: 0,
-      bigBonkMult: 1,
-
-      poisonChance: 0,
-      freezeChance: 0,
-
-      weapons: [],
-
-      shieldPerWave: 0,
-      shield: 0,
-      maxShield: 0, // Maximum shield capacity from tomes
-      iFrames: 0,
-
-      abilityId: c.space.id,
-      abilityCd: c.space.cd,
-      abilityT: 0,
-      abilityCdMult: 1, // Multiplier for ability cooldown reduction
-      
-      // Jump properties
-      z: 0, // Vertical position (for isometric depth)
-      jumpT: 0, // Jump timer (counts down)
-      jumpV: 0, // Jump velocity (vertical)
-      jumpVx: 0, // Jump horizontal velocity X
-      jumpVy: 0, // Jump horizontal velocity Y
-      jumpHeight: 1.0, // Jump height multiplier (upgradeable)
-      jumpLandingGrace: 0, // Grace period after landing to prevent immediate collision
-
-      buffHasteT: 0,
-      buffHasteMult: 1,
-
-      magnet: 1,
-      magnetT: 0, // Magnet shrine duration
-
-      coins: 0,
-      
-      // Track collected upgrades for display
-      collectedWeapons: [],
-      collectedTomes: [],
-      collectedItems: [],
-
-      lastDamage: { src: "", amt: 0 },
-    };
-
-    const stats = c.stats || {};
-    if (stats.hp != null) {
-      base.hp = stats.hp;
-      base.maxHp = stats.hp;
-    }
-    if (stats.speedBase != null) base.speedBase = stats.speedBase;
-    if (stats.critChance != null) base.critChance = stats.critChance;
+    const base = createPlayerWithCharacter(c, w, h);
+    
+    // Add any additional runtime properties not in characterData.js
+    // (Most properties are now defined in characterData.js)
     if (stats.sizeMult != null) base.sizeMult = stats.sizeMult;
     if (stats.armor != null) base.armor = stats.armor;
 
@@ -5448,34 +5332,50 @@ export default function NeonPitRoguelikeV3() {
 
     // Keyboard down handler
     const down = (e) => {
-      console.log("Key pressed:", e.key);
-      const k = e.key;
-      const u = uiRef.current;
-
-      // Escape key - Toggle pauseMenu (ONLY key that toggles pause)
-      if (k === "Escape") {
+      // CRITICAL: ESCAPE KEY MUST BE FIRST - Handle BEFORE anything else
+      if (e.key === "Escape") {
         e.preventDefault();
-        if (u.screen === "running") {
-          const s = stateRef.current;
-          const nextPauseMenu = !u.pauseMenu;
-          const nextUi = { ...u, pauseMenu: nextPauseMenu };
-          uiRef.current = nextUi;
-          setUi(nextUi);
-          if (s) {
-            s.running = !nextPauseMenu;
-          }
-          // Resume audio context
-          const a = audioRef.current;
-          if (a.ctx && a.ctx.state === 'suspended') {
-            a.ctx.resume().catch(() => {});
-          }
-        } else if (u.screen === "dead" || u.screen === "levelup") {
-          const nextUi = { ...u, screen: "menu" };
-          uiRef.current = nextUi;
-          setUi(nextUi);
+        e.stopImmediatePropagation();
+        
+        const currentUi = uiRef.current;
+        
+        if (currentUi.screen === "running") {
+          // Toggle pause menu - use functional setState for proper React update
+          setUi(prev => {
+            const nextPauseMenu = !prev.pauseMenu;
+            const nextUi = { ...prev, pauseMenu: nextPauseMenu };
+            uiRef.current = nextUi;
+            
+            // Update game running state
+            const s = stateRef.current;
+            if (s) {
+              s.running = !nextPauseMenu;
+            }
+            
+            // Resume audio context
+            const a = audioRef.current;
+            if (a.ctx && a.ctx.state === 'suspended') {
+              a.ctx.resume().catch(() => {});
+            }
+            
+            console.log("ESC: Pause menu toggled to", nextPauseMenu);
+            return nextUi;
+          });
+        } else if (currentUi.screen === "dead" || currentUi.screen === "levelup") {
+          // Exit to menu
+          setUi(prev => {
+            const nextUi = { ...prev, screen: "menu" };
+            uiRef.current = nextUi;
+            console.log("ESC: Returning to menu");
+            return nextUi;
+          });
         }
         return;
       }
+      
+      console.log("Key pressed:", e.key);
+      const k = e.key;
+      const u = uiRef.current;
 
       // MENU NAVIGATION: Flipped A/D keys to match visual rendering
       if (u.screen === "levelup") {
@@ -5772,13 +5672,16 @@ export default function NeonPitRoguelikeV3() {
 
     // Pointer down handler - Force audio on click
     const onPointerDown = (e) => {
-      // FORCE AUDIO ON CLICK: Wake up the audio engine at the very top
+      // AUDIO BOOTSTRAP: Force audio resume and play menu music if on menu screen
       const a = audioRef.current;
+      const currentUi = uiRef.current;
+      
       if (a.ctx && a.ctx.state === 'suspended') {
         a.ctx.resume().then(() => console.log("AudioContext Resumed"));
       }
-      // STABILIZE AUDIO: Only play if paused (don't spam play/pause)
-      if (a.menuMusic && a.menuMusic.paused) {
+      
+      // Play menu music if on menu screen and music is paused
+      if (currentUi.screen === 'menu' && a.menuMusic && a.menuMusic.paused) {
         a.menuMusic.play().catch(() => {});
       }
       
@@ -6043,24 +5946,38 @@ export default function NeonPitRoguelikeV3() {
         // Clear and setup canvas
         ctx.clearRect(0, 0, w, h);
         
-        // Render world and HUD if state exists
+        // CRITICAL RENDERING STACK FIX: Draw in exact order
         if (s && u.screen === 'running' && u.pauseMenu) {
-          // Pause menu - draw world behind pause overlay
+          // 1. Draw game world (background)
           drawWorld(s, ctx, isoScaleRef.current);
           drawHud(s, ctx, isoScaleRef.current, content);
+          
+          // 2. Draw semi-transparent overlay
+          ctx.fillStyle = "rgba(0,0,0,0.85)";
+          ctx.fillRect(0, 0, w, h);
+          
+          // 3. Draw pause menu cards/UI in SCREEN COORDINATES
+          drawOverlay(s, ctx, u, content, isoScaleRef.current, s);
         } else if (s && u.screen === 'levelup') {
-          // Level up screen - draw world behind levelup overlay
+          // LEVELUP SCREEN FIX: Draw world, overlay, then cards
+          // 1. Draw game world (background)
           drawWorld(s, ctx, isoScaleRef.current);
           drawHud(s, ctx, isoScaleRef.current, content);
+          
+          // 2. Draw semi-transparent overlay
+          ctx.fillStyle = "rgba(0,0,0,0.85)";
+          ctx.fillRect(0, 0, w, h);
+          
+          // 3. IMMEDIATELY draw upgrade cards in SCREEN COORDINATES (w/2, h/2)
+          drawOverlay(s, ctx, u, content, isoScaleRef.current, s);
         } else if (!s || u.screen === 'menu' || u.screen === 'dead') {
-          // Menu/dead screen - just dark background
+          // Menu/dead screen - dark background then overlay
           ctx.fillStyle = "#06070c";
           ctx.fillRect(0, 0, w, h);
+          
+          const overlayState = s || { arena: { w, h }, player: { coins: 0 } };
+          drawOverlay(overlayState, ctx, u, content, isoScaleRef.current, overlayState);
         }
-        
-        // Always draw overlay (for menu, pause, levelup, dead screens)
-        const overlayState = s || { arena: { w, h }, player: { coins: 0 } };
-        drawOverlay(overlayState, ctx, u, content, isoScaleRef.current, overlayState);
         
         rafRef.current = requestAnimationFrame(step);
         return;

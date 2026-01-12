@@ -3,7 +3,7 @@
 <html lang="en">
 
 <head>
-    <title>Code coverage report for src/utils/data.js</title>
+    <title>Code coverage report for src/data/index.js</title>
     <meta charset="utf-8" />
     <link rel="stylesheet" href="../../prettify.css" />
     <link rel="stylesheet" href="../../base.css" />
@@ -19,13 +19,13 @@
 <body>
 <div class='wrapper'>
     <div class='pad1'>
-        <h1><a href="../../index.html">All files</a> / <a href="index.html">src/utils</a> data.js</h1>
+        <h1><a href="../../index.html">All files</a> / <a href="index.html">src/data</a> index.js</h1>
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>0/33</span>
+                <span class='fraction'>0/48</span>
             </div>
         
             
@@ -46,7 +46,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>0/33</span>
+                <span class='fraction'>0/48</span>
             </div>
         
             
@@ -96,7 +96,37 @@
 <a name='L31'></a><a href='#L31'>31</a>
 <a name='L32'></a><a href='#L32'>32</a>
 <a name='L33'></a><a href='#L33'>33</a>
-<a name='L34'></a><a href='#L34'>34</a></td><td class="line-coverage quiet"><span class="cline-any cline-no">&nbsp;</span>
+<a name='L34'></a><a href='#L34'>34</a>
+<a name='L35'></a><a href='#L35'>35</a>
+<a name='L36'></a><a href='#L36'>36</a>
+<a name='L37'></a><a href='#L37'>37</a>
+<a name='L38'></a><a href='#L38'>38</a>
+<a name='L39'></a><a href='#L39'>39</a>
+<a name='L40'></a><a href='#L40'>40</a>
+<a name='L41'></a><a href='#L41'>41</a>
+<a name='L42'></a><a href='#L42'>42</a>
+<a name='L43'></a><a href='#L43'>43</a>
+<a name='L44'></a><a href='#L44'>44</a>
+<a name='L45'></a><a href='#L45'>45</a>
+<a name='L46'></a><a href='#L46'>46</a>
+<a name='L47'></a><a href='#L47'>47</a>
+<a name='L48'></a><a href='#L48'>48</a>
+<a name='L49'></a><a href='#L49'>49</a></td><td class="line-coverage quiet"><span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -130,38 +160,53 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js"><span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" ><span class="branch-0 cbranch-no" title="branch not covered" >/**</span></span></span>
-<span class="cstat-no" title="statement not covered" > * Data utility functions</span>
+<span class="cstat-no" title="statement not covered" > * Barrel export for all game data</span>
+<span class="cstat-no" title="statement not covered" > * This file provides a single entry point to initialize all game data</span>
 <span class="cstat-no" title="statement not covered" > */</span>
 <span class="cstat-no" title="statement not covered" ></span>
+<span class="cstat-no" title="statement not covered" >import { createWeapons } from "./weapons.js";</span>
+<span class="cstat-no" title="statement not covered" >import { createTomes } from "./tomes.js";</span>
+<span class="cstat-no" title="statement not covered" >import { createItems } from "./items.js";</span>
+<span class="cstat-no" title="statement not covered" >import { createCharacters } from "./characters.js";</span>
+<span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >/**</span>
-<span class="cstat-no" title="statement not covered" > * Deep clone an object using JSON serialization</span>
-<span class="cstat-no" title="statement not covered" > * @param {any} obj - Object to clone</span>
-<span class="cstat-no" title="statement not covered" > * @returns {any} Deep cloned object</span>
+<span class="cstat-no" title="statement not covered" > * Creates all game content (weapons, tomes, items, characters)</span>
+<span class="cstat-no" title="statement not covered" > * @param {Function} makeIconDraw - Function that creates icon drawing functions</span>
+<span class="cstat-no" title="statement not covered" > * @param {Function} rarityMult - Function that returns rarity multiplier</span>
+<span class="cstat-no" title="statement not covered" > * @param {Function} bumpShake - Function to add screen shake effect (for items)</span>
+<span class="cstat-no" title="statement not covered" > * @param {Function} addParticle - Function to add particles (for items)</span>
+<span class="cstat-no" title="statement not covered" > * @param {Function} sfxBoss - Function to play boss sound effect (for items)</span>
+<span class="cstat-no" title="statement not covered" > * @returns {Object} Object containing all game data</span>
 <span class="cstat-no" title="statement not covered" > */</span>
-<span class="cstat-no" title="statement not covered" >export function deepClone(obj) {</span>
-<span class="cstat-no" title="statement not covered" >  return JSON.parse(JSON.stringify(obj));</span>
+<span class="cstat-no" title="statement not covered" >export function createGameContent(makeIconDraw, rarityMult, bumpShake, addParticle, sfxBoss) {</span>
+<span class="cstat-no" title="statement not covered" >  return {</span>
+<span class="cstat-no" title="statement not covered" >    weapons: createWeapons(makeIconDraw),</span>
+<span class="cstat-no" title="statement not covered" >    tomes: createTomes(makeIconDraw, rarityMult),</span>
+<span class="cstat-no" title="statement not covered" >    items: createItems(makeIconDraw, rarityMult, bumpShake, addParticle, sfxBoss),</span>
+<span class="cstat-no" title="statement not covered" >    characters: createCharacters(),</span>
+<span class="cstat-no" title="statement not covered" >  };</span>
 <span class="cstat-no" title="statement not covered" >}</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >/**</span>
-<span class="cstat-no" title="statement not covered" > * Pick a random item from a weighted array</span>
-<span class="cstat-no" title="statement not covered" > * @param {Array&lt;{w: number, [key: string]: any}&gt;} items - Array of items with weight property 'w'</span>
-<span class="cstat-no" title="statement not covered" > * @returns {any} Selected item</span>
+<span class="cstat-no" title="statement not covered" > * Re-export individual creators for direct access if needed</span>
 <span class="cstat-no" title="statement not covered" > */</span>
-<span class="cstat-no" title="statement not covered" >export function pickWeighted(items) {</span>
-<span class="cstat-no" title="statement not covered" >  const total = items.reduce((s, it) =&gt; s + it.w, 0);</span>
-<span class="cstat-no" title="statement not covered" >  </span>
-<span class="cstat-no" title="statement not covered" >  // If all weights are zero or invalid, return the last item as fallback</span>
-<span class="cstat-no" title="statement not covered" >  if (total &lt;= 0) {</span>
-<span class="cstat-no" title="statement not covered" >    return items[items.length - 1];</span>
-<span class="cstat-no" title="statement not covered" >  }</span>
-<span class="cstat-no" title="statement not covered" >  </span>
-<span class="cstat-no" title="statement not covered" >  let r = Math.random() * total;</span>
-<span class="cstat-no" title="statement not covered" >  for (const it of items) {</span>
-<span class="cstat-no" title="statement not covered" >    r -= it.w;</span>
-<span class="cstat-no" title="statement not covered" >    if (r &lt;= 0) return it;</span>
-<span class="cstat-no" title="statement not covered" >  }</span>
-<span class="cstat-no" title="statement not covered" >  return items[items.length - 1];</span>
-<span class="cstat-no" title="statement not covered" >}</span>
+<span class="cstat-no" title="statement not covered" >export { createWeapons } from "./weapons.js";</span>
+<span class="cstat-no" title="statement not covered" >export { createTomes } from "./tomes.js";</span>
+<span class="cstat-no" title="statement not covered" >export { createItems } from "./items.js";</span>
+<span class="cstat-no" title="statement not covered" >export { createCharacters } from "./characters.js";</span>
+<span class="cstat-no" title="statement not covered" ></span>
+<span class="cstat-no" title="statement not covered" >/**</span>
+<span class="cstat-no" title="statement not covered" > * Re-export helper functions</span>
+<span class="cstat-no" title="statement not covered" > */</span>
+<span class="cstat-no" title="statement not covered" >export { getWeaponById } from "./weapons.js";</span>
+<span class="cstat-no" title="statement not covered" >export { getTomeById } from "./tomes.js";</span>
+<span class="cstat-no" title="statement not covered" >export { getItemById } from "./items.js";</span>
+<span class="cstat-no" title="statement not covered" >export { getCharacterById } from "./characters.js";</span>
+<span class="cstat-no" title="statement not covered" ></span>
+<span class="cstat-no" title="statement not covered" >/**</span>
+<span class="cstat-no" title="statement not covered" > * Re-export constants</span>
+<span class="cstat-no" title="statement not covered" > */</span>
+<span class="cstat-no" title="statement not covered" >export * from "./constants.js";</span>
 &nbsp;</pre></td></tr></table></pre>
 
                 <div class='push'></div><!-- for sticky footer -->

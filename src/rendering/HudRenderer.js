@@ -686,9 +686,8 @@ export function drawOverlay(s, ctx, ui, content, isoScale, state) {
     // ALWAYS show choices - fanfare should not block cards (FIXED)
     const showChoices = true;
     
-    // Background with fanfare effects
-    ctx.fillStyle = "rgba(0,0,0,0.76)";
-    ctx.fillRect(0, 0, w, h);
+    // NOTE: Background overlay is drawn in main render loop, not here
+    // This ensures proper rendering stack order
     
     // Level up fanfare: animated text and screen flash (rarity-colored)
     if (ui.levelUpFanfareT > 0) {

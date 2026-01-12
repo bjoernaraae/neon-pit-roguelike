@@ -23,30 +23,30 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">100% </span>
+                <span class="strong">67.27% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>55/55</span>
+                <span class='fraction'>37/55</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
                 <span class="strong">100% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>7/7</span>
+                <span class='fraction'>1/1</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">100% </span>
+                <span class="strong">33.33% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>3/3</span>
+                <span class='fraction'>1/3</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">100% </span>
+                <span class="strong">67.27% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>55/55</span>
+                <span class='fraction'>37/55</span>
             </div>
         
             
@@ -61,7 +61,7 @@
             </div>
         </template>
     </div>
-    <div class='status-line high'></div>
+    <div class='status-line medium'></div>
     <pre><table class="coverage">
 <tr><td class="line-count quiet"><a name='L1'></a><a href='#L1'>1</a>
 <a name='L2'></a><a href='#L2'>2</a>
@@ -130,13 +130,13 @@
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">10x</span>
-<span class="cline-any cline-yes">10x</span>
-<span class="cline-any cline-yes">7x</span>
-<span class="cline-any cline-yes">7x</span>
-<span class="cline-any cline-yes">7x</span>
-<span class="cline-any cline-yes">10x</span>
-<span class="cline-any cline-yes">10x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
@@ -146,10 +146,17 @@
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">2x</span>
-<span class="cline-any cline-yes">2x</span>
-<span class="cline-any cline-yes">2x</span>
-<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
@@ -158,21 +165,14 @@
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">51x</span>
-<span class="cline-any cline-yes">51x</span>
-<span class="cline-any cline-yes">51x</span>
-<span class="cline-any cline-yes">51x</span>
-<span class="cline-any cline-yes">51x</span>
-<span class="cline-any cline-yes">51x</span>
-<span class="cline-any cline-yes">51x</span>
-<span class="cline-any cline-yes">51x</span>
+<span class="cline-any cline-yes">48x</span>
+<span class="cline-any cline-yes">48x</span>
+<span class="cline-any cline-yes">48x</span>
+<span class="cline-any cline-yes">48x</span>
+<span class="cline-any cline-yes">48x</span>
+<span class="cline-any cline-yes">48x</span>
+<span class="cline-any cline-yes">48x</span>
+<span class="cline-any cline-yes">48x</span>
 <span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">/**
  * Color utility functions
  */
@@ -184,14 +184,14 @@ import { lerp } from './math.js';
  * @param {string} hex - Hex color string (with or without #)
  * @returns {{r: number, g: number, b: number}|null} RGB object or null if invalid
  */
-export function hexToRgb(hex) {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return result ? {
-    r: parseInt(result[1], 16),
-    g: parseInt(result[2], 16),
-    b: parseInt(result[3], 16)
-  } : null;
-}
+export <span class="fstat-no" title="function not covered" >function hexToRgb(hex) {</span>
+<span class="cstat-no" title="statement not covered" >  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);</span>
+<span class="cstat-no" title="statement not covered" >  return result ? {</span>
+<span class="cstat-no" title="statement not covered" >    r: parseInt(result[1], 16),</span>
+<span class="cstat-no" title="statement not covered" >    g: parseInt(result[2], 16),</span>
+<span class="cstat-no" title="statement not covered" >    b: parseInt(result[3], 16)</span>
+<span class="cstat-no" title="statement not covered" >  } : null;</span>
+<span class="cstat-no" title="statement not covered" >}</span>
 &nbsp;
 /**
  * Linear interpolation between two colors
@@ -200,18 +200,18 @@ export function hexToRgb(hex) {
  * @param {number} t - Interpolation factor (0-1)
  * @returns {string} Interpolated RGB color string
  */
-export function lerpColor(color1, color2, t) {
-  // Simple hex color lerp
-  const c1 = hexToRgb(color1);
-  const c2 = hexToRgb(color2);
-  if (!c1 || !c2) return color1;
-  // Use Math.floor to match test expectation of 127 for 0.5 interpolation
-  // lerp(0, 255, 0.5) = 127.5, Math.floor(127.5) = 127
-  const r = Math.floor(lerp(c1.r, c2.r, t));
-  const g = Math.floor(lerp(c1.g, c2.g, t));
-  const b = Math.floor(lerp(c1.b, c2.b, t));
-  return `rgb(${r},${g},${b})`;
-}
+export <span class="fstat-no" title="function not covered" >function lerpColor(color1, color2, t) {</span>
+<span class="cstat-no" title="statement not covered" >  // Simple hex color lerp</span>
+<span class="cstat-no" title="statement not covered" >  const c1 = hexToRgb(color1);</span>
+<span class="cstat-no" title="statement not covered" >  const c2 = hexToRgb(color2);</span>
+<span class="cstat-no" title="statement not covered" >  if (!c1 || !c2) return color1;</span>
+<span class="cstat-no" title="statement not covered" >  // Use Math.floor to match test expectation of 127 for 0.5 interpolation</span>
+<span class="cstat-no" title="statement not covered" >  // lerp(0, 255, 0.5) = 127.5, Math.floor(127.5) = 127</span>
+<span class="cstat-no" title="statement not covered" >  const r = Math.floor(lerp(c1.r, c2.r, t));</span>
+<span class="cstat-no" title="statement not covered" >  const g = Math.floor(lerp(c1.g, c2.g, t));</span>
+<span class="cstat-no" title="statement not covered" >  const b = Math.floor(lerp(c1.b, c2.b, t));</span>
+<span class="cstat-no" title="statement not covered" >  return `rgb(${r},${g},${b})`;</span>
+<span class="cstat-no" title="statement not covered" >}</span>
 &nbsp;
 /**
  * Adjust brightness of a hex color
@@ -235,7 +235,7 @@ export function adjustBrightness(color, amount) {
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2026-01-08T20:10:58.054Z
+                at 2026-01-12T22:44:47.140Z
             </div>
         <script src="../../prettify.js"></script>
         <script>
