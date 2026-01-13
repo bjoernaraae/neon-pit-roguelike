@@ -50,6 +50,9 @@ import { handleAdminClick as handleAdminClickFn, handleAdminAction as handleAdmi
 import { awardXP as awardXPFn } from "../game/progression/LevelUpSystem.js";
 import { createKeydownHandler, createKeyupHandler, createBlurHandler, createPointerDownHandler, createWheelHandler } from "../game/input/EventHandlers.js";
 import { newRun as newRunFn } from "../game/GameInitializer.js";
+import { processEnemyDeaths } from "../game/enemies/EnemyDeathSystem.js";
+import { updateBossPortalSpawning, updateDifficultyScaling, updateChestSpawning } from "../game/progression/GameProgressionSystem.js";
+import { updateHealthRegeneration, updateShieldRegeneration } from "../game/player/PlayerRegenerationSystem.js";
 
 // Aliases for backward compatibility
 const getVisualCubeRadius = getVisualRadius;
@@ -434,31 +437,10 @@ export default function NeonPitRoguelikeV3() {
 
     if (s.stageLeft > 0) s.stageLeft = Math.max(0, s.stageLeft - dt);
 
-    // Spawn boss portal after some time or when player is ready
-    if (!s.boss.active && !s.bossPortalSpawned) {
-      const timeOnFloor = s.t - s.floorStartTime;
-      // Spawn boss portal after 30 seconds or when stage time is low
-      if (timeOnFloor > 30 || s.stageLeft < 120) {
-        if (!s.schedule.didSeven) {
-        s.schedule.didSeven = true;
-        spawnInteractable(s, INTERACT.BOSS_TP);
-          s.bossPortalSpawned = true;
-      }
-      }
-    }
-    
-    // Increase difficulty over time
-    const timeOnFloor = s.t - s.floorStartTime;
-    s.difficultyMultiplier = 1.0 + Math.min(2.0, (timeOnFloor / s.maxStageTime) * 2.0);
-
-    if (s.chestSpawnT > 0) s.chestSpawnT = Math.max(0, s.chestSpawnT - dt);
-    const chestCount = s.interact.filter((it) => !it.used && it.kind === INTERACT.CHEST).length;
-    // Spawn multiple chests across the level (2-4 chests at a time, spread across different rooms)
-    const targetChestCount = s.levelData && s.levelData.rooms ? Math.min(4, Math.max(2, Math.floor(s.levelData.rooms.length * 0.4))) : 1;
-    if (chestCount < targetChestCount && s.chestSpawnT <= 0 && s.stageLeft > 0) {
-      spawnInteractable(s, INTERACT.CHEST);
-      s.chestSpawnT = 28 + rand(0, 12); // Faster respawn for multiple chests
-    }
+    // Game progression: boss portal, difficulty scaling, chest spawning
+    updateBossPortalSpawning(s, spawnInteractable, INTERACT);
+    updateDifficultyScaling(s);
+    updateChestSpawning(s, dt, spawnInteractable, INTERACT);
 
     // Update player movement and weapon cooldowns
     updatePlayerMovement(s, dt, keysRef);
@@ -510,88 +492,12 @@ export default function NeonPitRoguelikeV3() {
     // Update and collect loot (XP gems, coins, consumables with magnet pickup)
     updateLoot(s, dt, awardXP, sfxCoin, audioRef);
 
-    s.enemies = s.enemies.filter((e) => {
-      if (e.hp > 0) return true;
+    // Process enemy deaths and loot drops
+    processEnemyDeaths(s, sfxKill);
 
-      const x = e.x;
-      const y = e.y;
-
-      s.score += Math.round(20 + s.floor * 4);
-
-      // XP and Gold drop at enemy death location (no velocity, stay in place)
-      // Add small random offset to prevent overlapping
-      const gemOffset = 12;
-      const gemX = e.x + rand(-gemOffset, gemOffset);
-      const gemY = e.y + rand(-gemOffset, gemOffset);
-      s.gems.push({ x: gemX, y: gemY, r: 8, v: e.xp, vx: 0, vy: 0, t: 0, life: 18 });
-
-      // Always drop gold (removed chance-based drop)
-      // Store base coin value and goldGain at creation time
-      // Gold gain will be applied when picked up
-      // Add offset to prevent overlapping with gems
-      const coinOffset = 12;
-      const coinX = e.x + rand(-coinOffset, coinOffset);
-      const coinY = e.y + rand(-coinOffset, coinOffset);
-      s.coins.push({ 
-        x: coinX, 
-        y: coinY, 
-        r: 8, 
-        v: e.coin, // Base coin value (will be multiplied by current goldGain when picked up)
-        vx: 0, 
-        vy: 0, 
-        t: 0, 
-        life: 18 
-      });
-
-      // Drop consumable potions from enemies (rare drop)
-      if (Math.random() < 0.025) { // 2.5% chance for rare consumable drop
-        const consumableType = pickWeighted([
-          { w: 1, t: "speed" }, // Speed potion
-          { w: 1, t: "heal" }, // Heal potion
-          { w: 1, t: "magnet" }, // Magnet potion
-          { w: 1, t: "gold" }, // Gold boost potion (new)
-        ]).t;
-        const potionOffset = 12;
-        const potionX = e.x + rand(-potionOffset, potionOffset);
-        const potionY = e.y + rand(-potionOffset, potionOffset);
-        s.consumables.push({
-          x: potionX,
-          y: potionY,
-          r: 10,
-          type: consumableType,
-          vx: 0,
-          vy: 0,
-          t: 0,
-          life: 25, // Longer life than coins/gems
-        });
-      }
-
-      // Enhanced death effects
-      const deathHue = e.tier === "brute" ? 0 : e.tier === "runner" ? 48 : e.tier === "spitter" ? 140 : e.tier === "shocker" ? 180 : e.tier === "tank" ? 30 : 210;
-      addExplosion(s, x, y, 1.2, deathHue);
-      addParticle(s, x, y, 20, deathHue, { size: 2.5, speed: 1.2, glow: true });
-      const xNorm = clamp((x / (s.arena.w || 1)) * 2 - 1, -1, 1);
-      sfxKill(xNorm);
-
-      return false;
-    });
-
-    const pickRadius = 100 * p.magnet;
-    if (p.regen > 0 && p.hp > 0 && p.hp < p.maxHp) {
-      p.hp = Math.min(p.maxHp, p.hp + p.regen * dt);
-    }
-
-    // Shield regeneration (only if player has maxShield from tomes or shieldPerWave from items)
-    if (Math.floor(s.stageLeft) % 60 === 0 && s._shieldTick !== Math.floor(s.stageLeft)) {
-      s._shieldTick = Math.floor(s.stageLeft);
-      // Regenerate shield: use shieldPerWave if set, otherwise regenerate 30% of maxShield
-      if (p.shieldPerWave > 0) {
-      p.shield = p.shieldPerWave;
-      } else if (p.maxShield > 0) {
-        const regenAmount = p.maxShield * 0.3; // Regenerate 30% of max shield
-        p.shield = Math.min(p.maxShield, (p.shield || 0) + regenAmount);
-      }
-    }
+    // Player regeneration
+    updateHealthRegeneration(p, dt);
+    updateShieldRegeneration(s);
 
     // Floor transition happens when boss is defeated, not on timer
     // (Boss must be defeated to progress)
