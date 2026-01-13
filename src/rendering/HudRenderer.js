@@ -547,7 +547,7 @@ export function drawOverlay(s, ctx, ui, content, isoScale, state) {
         
         let adminFunctions = [];
         
-        if (ui.adminCategory === "main") {
+        if (ui.adminCategory === "main" || !ui.adminCategory) {
           adminFunctions = [
             { name: "Level Up", action: "levelup" },
             { name: "Spawn Boss", action: "spawnBoss" },
