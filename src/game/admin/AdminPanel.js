@@ -1,7 +1,7 @@
 /**
  * Handle admin panel button clicks
  */
-export function handleAdminClick(x, y, w, h, stateRef, content, handleAdminActionFn) {
+export function handleAdminClick(x, y, w, h, stateRef, uiRef, content, handleAdminActionFn, setUi) {
   const adminPanelX = w * 0.5 - 220;
   const adminPanelY = 100;
   const adminPanelW = 440;
@@ -14,35 +14,86 @@ export function handleAdminClick(x, y, w, h, stateRef, content, handleAdminActio
   }
   
   const s = stateRef.current;
-  const buttonStartY = adminPanelY + 60;
-  const buttonH = 26;
-  const buttonSpacing = 34;
-  const buttonW = 180;
+  const ui = uiRef.current;
   
-  // Admin functions to display
-  const adminFunctions = [
-    { name: "Level Up", action: "levelup" },
-    { name: "Spawn Boss", action: "spawnBoss" },
-    { name: "Spawn Chest", action: "spawnChest" },
-    { name: "Spawn Speed", action: "spawnSpeed" },
-    { name: "Spawn Heal", action: "spawnHeal" },
-    { name: "Spawn Magnet", action: "spawnMagnet" },
-    { name: "Full Heal", action: "fullHeal" },
-    { name: "+1000 Gold", action: "addGold" },
-    { name: "+1000 XP", action: "addXP" },
-    { name: "Kill All", action: "killAll" },
-    { name: "Give All Weapons", action: "giveAllWeapons" },
-    { name: "Give All Tomes", action: "giveAllTomes" },
-    { name: "Give All Items", action: "giveAllItems" },
+  // Category buttons at top
+  const categoryY = 145;
+  const categoryW = 85;
+  const categoryH = 22;
+  const categories = [
+    { name: "Main", cat: "main" },
+    { name: "Weapons", cat: "weapons" },
+    { name: "Tomes", cat: "tomes" },
+    { name: "Items", cat: "items" },
   ];
   
-  // Check button clicks
+  // Check category tab clicks
+  for (let i = 0; i < categories.length; i++) {
+    const cat = categories[i];
+    const catX = w * 0.5 - 170 + i * 90;
+    if (x >= catX && x <= catX + categoryW &&
+        y >= categoryY && y <= categoryY + categoryH) {
+      setUi((u) => ({ ...u, adminCategory: cat.cat }));
+      return;
+    }
+  }
+  
+  // Admin buttons layout - two columns
+  const adminY = 175;
+  const adminButtonH = 26;
+  const adminSpacing = 28;
+  const adminCol1X = w * 0.5 - 200;
+  const adminCol2X = w * 0.5 + 20;
+  const adminButtonW = 180;
+  
+  let adminFunctions = [];
+  
+  if (ui.adminCategory === "main" || !ui.adminCategory) {
+    adminFunctions = [
+      { name: "Level Up", action: "levelup" },
+      { name: "Spawn Boss", action: "spawnBoss" },
+      { name: "Spawn Chest", action: "spawnChest" },
+      { name: "Speed Shrine", action: "spawnSpeed" },
+      { name: "Heal Shrine", action: "spawnHeal" },
+      { name: "Magnet Shrine", action: "spawnMagnet" },
+      { name: "Full Heal", action: "fullHeal" },
+      { name: "+1000 Gold", action: "addGold" },
+      { name: "+1000 XP", action: "addXP" },
+      { name: "Kill All", action: "killAll" },
+      { name: "All Weapons", action: "giveAllWeapons" },
+      { name: "All Tomes", action: "giveAllTomes" },
+      { name: "All Items", action: "giveAllItems" },
+      { name: "Close Admin", action: "closeAdmin" },
+    ];
+  } else if (ui.adminCategory === "weapons") {
+    adminFunctions = content.weapons.map(w => ({
+      name: w.name.length > 20 ? w.name.substring(0, 20) : w.name,
+      action: `giveWeapon:${w.id}`,
+    }));
+    adminFunctions.push({ name: "Back", action: "backToMain" });
+  } else if (ui.adminCategory === "tomes") {
+    adminFunctions = content.tomes.map(t => ({
+      name: t.name.length > 20 ? t.name.substring(0, 20) : t.name,
+      action: `giveTome:${t.id}`,
+    }));
+    adminFunctions.push({ name: "Back", action: "backToMain" });
+  } else if (ui.adminCategory === "items") {
+    adminFunctions = content.items.map(it => ({
+      name: it.name.length > 20 ? it.name.substring(0, 20) : it.name,
+      action: `giveItem:${it.id}`,
+    }));
+    adminFunctions.push({ name: "Back", action: "backToMain" });
+  }
+  
+  // Check button clicks - two column layout
   for (let i = 0; i < adminFunctions.length; i++) {
-    const btnY = buttonStartY + i * buttonSpacing;
-    const btnX = adminPanelX + (adminPanelW - buttonW) / 2;
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const btnX = col === 0 ? adminCol1X : adminCol2X;
+    const btnY = adminY + row * adminSpacing;
     
-    if (x >= btnX && x <= btnX + buttonW &&
-        y >= btnY && y <= btnY + buttonH) {
+    if (x >= btnX && x <= btnX + adminButtonW &&
+        y >= btnY && y <= btnY + adminButtonH) {
       handleAdminActionFn(s, adminFunctions[i].action);
       return;
     }

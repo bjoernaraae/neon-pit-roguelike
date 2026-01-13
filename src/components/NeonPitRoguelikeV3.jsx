@@ -440,7 +440,7 @@ export default function NeonPitRoguelikeV3() {
 
   // ADMIN PANEL: Click handler for pause menu admin section
   function handleAdminClick(x, y, w, h, u, content) {
-    return handleAdminClickFn(x, y, w, h, stateRef, content, handleAdminAction);
+    return handleAdminClickFn(x, y, w, h, stateRef, uiRef, content, handleAdminAction, setUi);
   }
 
   function handleAdminAction(s, action) {
