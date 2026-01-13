@@ -636,6 +636,328 @@ export function convertBSPToGrid(rooms, corridors, width, height, gridSize = 10)
 }
 
 /**
+ * Ensure 100% map connectivity by fixing isolated areas and invisible walls
+ * @param {Array<Array<number>>} grid - Current grid (0=wall, 1=floor)
+ * @param {Array} rooms - Room objects
+ * @param {Array} corridors - Corridor objects
+ * @param {number} width - Level width
+ * @param {number} height - Level height
+ * @param {number} gridSize - Grid cell size
+ * @returns {{grid: Array<Array<number>>, wallInfluence: Array<Array<number>>|null}} Corrected grid and influence map
+ */
+function ensureMapConnectivity(grid, rooms, corridors, width, height, gridSize) {
+  const gridW = Math.ceil(width / gridSize);
+  const gridH = Math.ceil(height / gridSize);
+
+  // Step 1: Widen corridors to prevent diagonal wall-clipping
+  const widenedGrid = ensureWideCorridors(grid, corridors, gridW, gridH, gridSize);
+
+  // Step 2: Find player spawn point (assume first room center for now)
+  let spawnX = 0, spawnY = 0;
+  if (rooms.length > 0) {
+    const firstRoom = rooms[0];
+    spawnX = Math.floor((firstRoom.x + firstRoom.w / 2) / gridSize);
+    spawnY = Math.floor((firstRoom.y + firstRoom.h / 2) / gridSize);
+  }
+
+  // Step 3: Flood fill from spawn to find all reachable tiles
+  const reachable = floodFillReachable(widenedGrid, spawnX, spawnY, gridW, gridH);
+
+  // Step 4: Find isolated areas (unreachable floor tiles)
+  const isolatedAreas = findIsolatedAreas(widenedGrid, reachable, gridW, gridH);
+
+  // Step 5: Connect isolated areas to main reachable area
+  const connectedGrid = connectIsolatedAreas(widenedGrid, isolatedAreas, reachable, gridW, gridH);
+
+  // Step 6: Clean junction points to prevent invisible walls
+  const cleanGrid = cleanJunctions(connectedGrid, rooms, corridors, gridW, gridH, gridSize);
+
+  // Step 7: Regenerate wall influence map
+  const wallInfluence = generateWallInfluenceMap(cleanGrid);
+
+  return {
+    grid: cleanGrid,
+    wallInfluence
+  };
+}
+
+/**
+ * Ensure corridors are wide enough to prevent diagonal wall-clipping
+ * @param {Array<Array<number>>} grid - Current grid
+ * @param {Array} corridors - Corridor objects
+ * @param {number} gridW - Grid width
+ * @param {number} gridH - Grid height
+ * @param {number} gridSize - Grid cell size
+ * @returns {Array<Array<number>>} Widened grid
+ */
+function ensureWideCorridors(grid, corridors, gridW, gridH, gridSize) {
+  const result = grid.map(row => [...row]);
+
+  for (const corridor of corridors) {
+    const startX = Math.floor(corridor.x / gridSize);
+    const startY = Math.floor(corridor.y / gridSize);
+    const endX = Math.ceil((corridor.x + corridor.w) / gridSize);
+    const endY = Math.ceil((corridor.y + corridor.h) / gridSize);
+
+    // Ensure at least 1 tile of padding around corridors
+    for (let y = Math.max(0, startY - 1); y < Math.min(gridH, endY + 1); y++) {
+      for (let x = Math.max(0, startX - 1); x < Math.min(gridW, endX + 1); x++) {
+        result[y][x] = 1; // Force walkable
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Flood fill from spawn point to find all reachable walkable tiles
+ * @param {Array<Array<number>>} grid - Grid to analyze
+ * @param {number} startX - Starting X coordinate
+ * @param {number} startY - Starting Y coordinate
+ * @param {number} gridW - Grid width
+ * @param {number} gridH - Grid height
+ * @returns {Array<Array<boolean>>} Reachability grid
+ */
+function floodFillReachable(grid, startX, startY, gridW, gridH) {
+  const reachable = [];
+  for (let y = 0; y < gridH; y++) {
+    reachable[y] = [];
+    for (let x = 0; x < gridW; x++) {
+      reachable[y][x] = false;
+    }
+  }
+
+  if (startX < 0 || startX >= gridW || startY < 0 || startY >= gridH || grid[startY][startX] !== 1) {
+    return reachable; // Invalid start
+  }
+
+  const queue = [[startX, startY]];
+  reachable[startY][startX] = true;
+
+  const directions = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+
+  while (queue.length > 0) {
+    const [x, y] = queue.shift();
+
+    for (const [dx, dy] of directions) {
+      const nx = x + dx;
+      const ny = y + dy;
+
+      if (nx >= 0 && nx < gridW && ny >= 0 && ny < gridH &&
+          !reachable[ny][nx] && grid[ny][nx] === 1) {
+        reachable[ny][nx] = true;
+        queue.push([nx, ny]);
+      }
+    }
+  }
+
+  return reachable;
+}
+
+/**
+ * Find isolated areas (unreachable floor tiles)
+ * @param {Array<Array<number>>} grid - Grid
+ * @param {Array<Array<boolean>>} reachable - Reachability grid
+ * @param {number} gridW - Grid width
+ * @param {number} gridH - Grid height
+ * @returns {Array<Array<Array<number>>>} Array of isolated areas (each area is [x,y] pairs)
+ */
+function findIsolatedAreas(grid, reachable, gridW, gridH) {
+  const visited = [];
+  for (let y = 0; y < gridH; y++) {
+    visited[y] = [];
+    for (let x = 0; x < gridW; x++) {
+      visited[y][x] = false;
+    }
+  }
+
+  const isolatedAreas = [];
+  const directions = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+
+  for (let y = 0; y < gridH; y++) {
+    for (let x = 0; x < gridW; x++) {
+      if (grid[y][x] === 1 && !reachable[y][x] && !visited[y][x]) {
+        // Found an isolated floor tile - flood fill to find the entire isolated area
+        const area = [];
+        const queue = [[x, y]];
+        visited[y][x] = true;
+
+        while (queue.length > 0) {
+          const [cx, cy] = queue.shift();
+          area.push([cx, cy]);
+
+          for (const [dx, dy] of directions) {
+            const nx = cx + dx;
+            const ny = cy + dy;
+
+            if (nx >= 0 && nx < gridW && ny >= 0 && ny < gridH &&
+                !visited[ny][nx] && grid[ny][nx] === 1 && !reachable[ny][nx]) {
+              visited[ny][nx] = true;
+              queue.push([nx, ny]);
+            }
+          }
+        }
+
+        if (area.length > 0) {
+          isolatedAreas.push(area);
+        }
+      }
+    }
+  }
+
+  return isolatedAreas;
+}
+
+/**
+ * Connect isolated areas to the main reachable area
+ * @param {Array<Array<number>>} grid - Current grid
+ * @param {Array<Array<Array<number>>>} isolatedAreas - Array of isolated areas
+ * @param {Array<Array<boolean>>} reachable - Reachability grid
+ * @param {number} gridW - Grid width
+ * @param {number} gridH - Grid height
+ * @returns {Array<Array<number>>} Grid with connection corridors
+ */
+function connectIsolatedAreas(grid, isolatedAreas, reachable, gridW, gridH) {
+  const result = grid.map(row => [...row]);
+
+  for (const area of isolatedAreas) {
+    if (area.length === 0) continue;
+
+    // Find the center of this isolated area
+    let areaCenterX = 0, areaCenterY = 0;
+    for (const [x, y] of area) {
+      areaCenterX += x;
+      areaCenterY += y;
+    }
+    areaCenterX /= area.length;
+    areaCenterY /= area.length;
+
+    // Find the nearest reachable point
+    let nearestReachableX = -1, nearestReachableY = -1;
+    let minDist = Infinity;
+
+    for (let y = 0; y < gridH; y++) {
+      for (let x = 0; x < gridW; x++) {
+        if (reachable[y][x]) {
+          const dist = Math.hypot(x - areaCenterX, y - areaCenterY);
+          if (dist < minDist) {
+            minDist = dist;
+            nearestReachableX = x;
+            nearestReachableY = y;
+          }
+        }
+      }
+    }
+
+    if (nearestReachableX >= 0 && nearestReachableY >= 0) {
+      // Carve a corridor from the isolated area center to the nearest reachable point
+      carveConnectionCorridor(result, areaCenterX, areaCenterY, nearestReachableX, nearestReachableY, gridW, gridH);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Carve a connection corridor between two points
+ * @param {Array<Array<number>>} grid - Grid to modify
+ * @param {number} startX - Starting X coordinate
+ * @param {number} startY - Starting Y coordinate
+ * @param {number} endX - Ending X coordinate
+ * @param {number} endY - Ending Y coordinate
+ * @param {number} gridW - Grid width
+ * @param {number} gridH - Grid height
+ */
+function carveConnectionCorridor(grid, startX, startY, endX, endY, gridW, gridH) {
+  // Use Bresenham's line algorithm to carve a path
+  const dx = Math.abs(endX - startX);
+  const dy = Math.abs(endY - startY);
+  const sx = startX < endX ? 1 : -1;
+  const sy = startY < endY ? 1 : -1;
+  let err = dx - dy;
+
+  let x = startX;
+  let y = startY;
+
+  // Carve the path with some width (3 tiles wide for safety)
+  while (true) {
+    // Carve a 3x3 area around each point for wider corridors
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx >= 0 && nx < gridW && ny >= 0 && ny < gridH) {
+          grid[ny][nx] = 1; // Make walkable
+        }
+      }
+    }
+
+    if (x === endX && y === endY) break;
+
+    const e2 = 2 * err;
+    if (e2 > -dy) {
+      err -= dy;
+      x += sx;
+    }
+    if (e2 < dx) {
+      err += dx;
+      y += sy;
+    }
+  }
+}
+
+/**
+ * Clean junction points to prevent invisible walls at corridor-room connections
+ * @param {Array<Array<number>>} grid - Current grid
+ * @param {Array} rooms - Room objects
+ * @param {Array} corridors - Corridor objects
+ * @param {number} gridW - Grid width
+ * @param {number} gridH - Grid height
+ * @param {number} gridSize - Grid cell size
+ * @returns {Array<Array<number>>} Cleaned grid
+ */
+function cleanJunctions(grid, rooms, corridors, gridW, gridH, gridSize) {
+  const result = grid.map(row => [...row]);
+
+  // For each corridor-room connection, ensure a clear path
+  for (const corridor of corridors) {
+    for (const room of rooms) {
+      // Check if this corridor connects to this room
+      if (corridorOverlapsRoom(corridor, room)) {
+        // Find the overlap area and ensure it's completely walkable
+        const corrStartX = Math.floor(corridor.x / gridSize);
+        const corrStartY = Math.floor(corridor.y / gridSize);
+        const corrEndX = Math.ceil((corridor.x + corridor.w) / gridSize);
+        const corrEndY = Math.ceil((corridor.y + corridor.h) / gridSize);
+
+        const roomStartX = Math.floor(room.x / gridSize);
+        const roomStartY = Math.floor(room.y / gridSize);
+        const roomEndX = Math.ceil((room.x + room.w) / gridSize);
+        const roomEndY = Math.ceil((room.y + room.h) / gridSize);
+
+        // Find overlap area
+        const overlapStartX = Math.max(corrStartX, roomStartX);
+        const overlapStartY = Math.max(corrStartY, roomStartY);
+        const overlapEndX = Math.min(corrEndX, roomEndX);
+        const overlapEndY = Math.min(corrEndY, roomEndY);
+
+        // Ensure the entire overlap area is walkable (max-clearance approach)
+        for (let y = overlapStartY; y < overlapEndY; y++) {
+          for (let x = overlapStartX; x < overlapEndX; x++) {
+            if (x >= 0 && x < gridW && y >= 0 && y < gridH) {
+              result[y][x] = 1; // Force walkable
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
  * Generate BSP dungeon
  * @param {number} width - Dungeon width
  * @param {number} height - Dungeon height
@@ -903,10 +1225,20 @@ export function generateBSPDungeon(width, height, minRoomSize, maxDepth = 4) {
   
   // Convert to grid
   const gridResult = convertBSPToGrid(finalRooms, finalFilteredCorridors, width, height, 10);
-  
+
+  // Ensure 100% map connectivity - fix isolated rooms and invisible walls
+  const connectivityResult = ensureMapConnectivity(
+    gridResult.grid,
+    finalRooms,
+    finalFilteredCorridors,
+    width,
+    height,
+    10
+  );
+
   return {
-    grid: gridResult.grid,
-    wallInfluence: gridResult.wallInfluence || null,
+    grid: connectivityResult.grid,
+    wallInfluence: connectivityResult.wallInfluence || null,
     rooms: finalRooms,
     corridors: finalFilteredCorridors,
     bspTree: root
