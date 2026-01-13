@@ -33,17 +33,25 @@ export function playBeep(audioRef, { type = "sine", f0 = 440, f1 = 440, dur = 0.
   const p = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
 
   osc.type = type;
-  osc.frequency.setValueAtTime(f0, ctx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(Math.max(40, f1), ctx.currentTime + Math.max(0.01, dur));
+  // Ensure all audio parameters are finite (NaN or Infinity will crash Web Audio API)
+  const safeF0 = isFinite(f0) ? f0 : 440;
+  const safeF1 = isFinite(f1) ? Math.max(40, f1) : Math.max(40, safeF0);
+  const safeDur = isFinite(dur) ? Math.max(0.01, dur) : 0.08;
+  const safeGain = isFinite(gain) ? Math.max(0.0002, gain) : 0.2;
+  
+  osc.frequency.setValueAtTime(safeF0, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(safeF1, ctx.currentTime + safeDur);
 
   g.gain.setValueAtTime(0.0001, ctx.currentTime);
-  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), ctx.currentTime + 0.01);
-  g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
+  g.gain.exponentialRampToValueAtTime(safeGain, ctx.currentTime + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + safeDur);
 
   const dst = to === "music" ? a.musicGain : a.sfxGain;
 
   if (p) {
-    p.pan.setValueAtTime(clamp(pan, -1, 1), ctx.currentTime);
+    // Ensure pan is finite before setting (NaN or Infinity will crash Web Audio API)
+    const safePan = isFinite(pan) ? clamp(pan, -1, 1) : 0;
+    p.pan.setValueAtTime(safePan, ctx.currentTime);
     osc.connect(g);
     g.connect(p);
     p.connect(dst);
@@ -53,7 +61,7 @@ export function playBeep(audioRef, { type = "sine", f0 = 440, f1 = 440, dur = 0.
   }
 
   osc.start();
-  osc.stop(ctx.currentTime + dur + 0.02);
+  osc.stop(ctx.currentTime + safeDur + 0.02);
 }
 
 /**

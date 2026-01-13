@@ -240,7 +240,7 @@ export function updateEnemyAI(s, dt, shootBulletFn, applyPlayerDamageFn, sfxHitF
         const eliteDmgMult = e.isElite ? (e.eliteAbility === "rage" ? 1 + (1 - e.hp / e.maxHp) * 0.5 : 1.3) : 1;
         const contactDmg = (baseDmg * eliteDmgMult) * 0.5; // Half damage for contact
         const did = applyPlayerDamageFn(s, contactDmg, `${e.tier} contact`, { shakeMag: 1.6, shakeTime: 0.06, hitStop: 0, fromX: e.x, fromY: e.y });
-        if (did) sfxHitFn(xNorm);
+        if (did && isFinite(xNorm)) sfxHitFn(xNorm);
         e.contactCd = 0.6; // Reduced from 0.95 to allow more frequent hits when in contact
         
         // Apply knockback to player (away from enemy)

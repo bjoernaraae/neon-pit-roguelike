@@ -63,7 +63,7 @@ export function shootBullet(s, x, y, angle, dmg, speed, opts, sfxShootFn) {
   s.bullets.push(bullet);
 
   const xNorm = clamp((x / (s.arena.w || 1)) * 2 - 1, -1, 1);
-  if (!opts?.enemy) {
+  if (!opts?.enemy && isFinite(xNorm)) {
     const soundVariant = opts?.soundVariant ?? Math.floor(Math.random() * 3);
     sfxShootFn(xNorm, soundVariant);
   }
