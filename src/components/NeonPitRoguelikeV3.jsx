@@ -41,6 +41,8 @@ import { fireWeapon as fireWeaponFn } from "../game/weapons/WeaponSystem.js";
 import { createChoiceRoller } from "../game/progression/ChoiceRoller.js";
 import { createUpgradeSequence } from "../game/progression/UpgradeSequence.js";
 import { createChoiceHandler } from "../game/progression/ChoiceHandler.js";
+import { nearestInteractable as nearestInteractableFn, tryUseInteractable as tryUseInteractableFn } from "../game/interactables/InteractionHandler.js";
+import { useAbility as useAbilityFn } from "../game/player/PlayerAbilities.js";
 
 // Aliases for backward compatibility
 const getVisualCubeRadius = getVisualRadius;
@@ -646,20 +648,7 @@ export default function NeonPitRoguelikeV3() {
   }
 
   function nearestInteractable(s) {
-    const p = s.player;
-    let best = null;
-    let bestD = Infinity;
-
-    for (const it of s.interact) {
-      if (it.used) continue;
-      const d = Math.hypot(p.x - it.x, p.y - it.y);
-      if (d < bestD) {
-        bestD = d;
-        best = it;
-      }
-    }
-
-    return best && bestD <= 52 ? best : null;
+    return nearestInteractableFn(s);
   }
 
   function recordDamage(p, src, amt) {
@@ -779,273 +768,11 @@ export default function NeonPitRoguelikeV3() {
   }
 
   function tryUseInteractable(s) {
-    const p = s.player;
-    const best = nearestInteractable(s);
-    if (!best) return;
-
-    // Calculate dynamic cost for boss portal (percentage of current gold)
-    let actualCost = best.cost;
-    if (best.kind === INTERACT.BOSS_TP && best.cost === -1) {
-      const percentageCost = Math.round(p.coins * 0.2);
-      actualCost = Math.max(100, percentageCost);
-    }
-
-    if (actualCost > 0 && p.coins < actualCost) {
-      pushCombatText(s, p.x, p.y - 24, `Need ${actualCost}`, "#ffd44a", { size: 12, life: 0.7 });
-      return;
-    }
-    if (actualCost > 0) p.coins -= actualCost;
-
-    best.used = true;
-    sfxInteract();
-
-    if (best.kind === INTERACT.CHEST) {
-      s.chestOpens += 1;
-      // Removed "CHEST OPENED" text to avoid blocking upgrade display
-      s.interact = s.interact.filter((x) => x.id !== best.id);
-      // Preserve explosive bullets (injected or seeking) and boomerang bullets when opening chest
-      s.bullets = s.bullets.filter(b => 
-        (b.explosive && ((b.injected && b.injectedEnemy) || (b.seeking && !b.injected))) ||
-        (b.boomerang && b.t < b.life)
-      );
-
-      // DELETE random upgrade logic - use triggerUpgradeSequence instead
-      triggerUpgradeSequence(s, content);
-      s.running = false;
-      s.freezeMode = "levelup";
-
-      s.chestSpawnT = 28 + rand(0, 18);
-      return;
-    }
-
-    if (best.kind === INTERACT.SHRINE) {
-      // Shrine repurposed as permanent buff station - gives small permanent stat boost
-      // Can be used multiple times, but with diminishing returns
-      const statBoost = 0.02; // 2% permanent boost
-      p.weaponDamage = (p.weaponDamage || 1) * (1 + statBoost);
-      p.maxHp = Math.round((p.maxHp || 100) * (1 + statBoost));
-      p.hp = Math.min(p.maxHp, p.hp + Math.round(p.maxHp * statBoost));
-      bumpShake(s, 2, 0.06);
-      addParticle(s, p.x, p.y, 20, 200, { size: 3, speed: 1.2 });
-      pushCombatText(s, p.x, p.y - 30, "+2% STATS", "#ffd44a", { size: 16, life: 1.2 });
-      // Shrine doesn't disappear - can be used multiple times
-      return;
-    }
-
-    if (best.kind === INTERACT.MICROWAVE) {
-      // Microwave repurposed as permanent HP boost station
-      const hpBoost = Math.round(p.maxHp * 0.05); // 5% max HP boost
-      p.maxHp = Math.round(p.maxHp + hpBoost);
-      p.hp = Math.min(p.maxHp, p.hp + hpBoost);
-      addParticle(s, p.x, p.y, 18, 160);
-      pushCombatText(s, p.x, p.y - 30, `+${hpBoost} MAX HP`, "#4dff88", { size: 16, life: 1.2 });
-      // Microwave doesn't disappear - can be used multiple times
-      return;
-    }
-
-    if (best.kind === INTERACT.GREED) {
-      p.difficultyTome *= 1.15;
-      s.spawn.delay = Math.max(0.26, s.spawn.delay * 0.92);
-      pushCombatText(s, p.x, p.y - 30, "GREED SHRINE", "#ffd44a", { size: 16, life: 1.2 });
-      s.interact = s.interact.filter((x) => x.id !== best.id);
-      return;
-    }
-
-    if (best.kind === INTERACT.BOSS_TP) {
-      // Store boss teleporter position for boss spawn
-      const u = uiRef.current;
-      u.bossTpX = best.x;
-      u.bossTpY = best.y;
-      s.interact = s.interact.filter((x) => x.id !== best.id);
-      if (!s.boss.active) {
-        startBoss(s, 120, best.x, best.y); // Spawn boss at teleporter location
-        s.bossPortalSpawned = false; // Reset for next floor
-      }
-    }
+    return tryUseInteractableFn(s, INTERACT, triggerUpgradeSequence, startBoss, sfxInteract, content, uiRef);
   }
 
   function useAbility(s) {
-    const p = s.player;
-    if (p.abilityT > 0 || p.hp <= 0) return;
-    
-        // Ability cooldown is now enforced by abilityT > 0 check above
-        // No need to check for active seeking bullets - cooldown prevents spamming
-    
-
-    const keys = keysRef.current;
-    let mx = (keys.has("ArrowRight") || keys.has("d") ? 1 : 0) - (keys.has("ArrowLeft") || keys.has("a") ? 1 : 0);
-    let my = (keys.has("ArrowDown") || keys.has("s") ? 1 : 0) - (keys.has("ArrowUp") || keys.has("w") ? 1 : 0);
-    
-    // Transform input directions for isometric mode
-    let ux, uy;
-    if (ISO_MODE && (mx !== 0 || my !== 0)) {
-      const transformed = transformInputForIsometric(mx, my);
-      ux = transformed.x;
-      uy = transformed.y;
-    } else {
-    const len = Math.hypot(mx, my) || 1;
-      ux = len ? mx / len : 1;
-      uy = len ? my / len : 0;
-    }
-
-    if (p.abilityId === "blink") {
-      const dist = 190;
-      // Use levelData bounds if available, otherwise fall back to arena
-      const padding = s.arena.padding;
-      const maxX = s.levelData ? s.levelData.w - padding : s.arena.w - padding;
-      const maxY = s.levelData ? s.levelData.h - padding : s.arena.h - padding;
-      p.x = clamp(p.x + ux * dist, padding, maxX);
-      p.y = clamp(p.y + uy * dist, padding, maxY);
-      p.iFrames = Math.max(p.iFrames, 0.4);
-      addParticle(s, p.x, p.y, 16, 190);
-      playBeep({ type: "triangle", f0: 840, f1: 520, dur: 0.09, gain: 0.14, pan: 0 });
-      p.abilityT = p.abilityCd * (p.abilityCdMult || 1);
-      return;
-    }
-
-    // ALTERNATIVE COWBOY SPECIAL POWERS (for future implementation):
-    // 1. "Fan the Hammer" - Rapid fire 6-8 shots in a cone toward nearest enemy (high damage, focused)
-    // 2. "Dead Eye" - Time slows by 50% for 3 seconds, all shots guaranteed crits
-    // 3. "Ricochet Shot" - One massive damage shot that bounces between 5-8 enemies
-    // 4. "High Noon" - Lock onto all visible enemies, then fire powerful shots at each simultaneously
-    // 5. "Duel" - Single massive damage shot (3-4x weapon damage) at nearest enemy with guaranteed crit
-    // 6. "Bullet Storm" - Continuous rapid fire in all directions for 2 seconds (damage over time)
-    // 7. "Showdown" - Mark all enemies in range, after 1 second all marked enemies take massive damage
-    // 8. "Trick Shot" - Fire 3 shots that curve and seek nearest enemies
-    
-    if (p.abilityId === "quickdraw") {
-      // Explosive Shot: Injects onto an enemy, then explodes after 2 seconds
-      // Start cooldown immediately to prevent spamming (8 second cooldown)
-      p.abilityT = p.abilityCd * (p.abilityCdMult || 1);
-      
-      const tgt = acquireTarget(s, p.x, p.y);
-      if (tgt) {
-        const dx = tgt.x - p.x;
-        const dy = tgt.y - p.y;
-        const angle = Math.atan2(dy, dx);
-        
-        // Reduced damage (1.2x total weapon damage instead of 2.5x)
-        const totalDmg = (p.weapons ? p.weapons.reduce((sum, w) => sum + w.weaponDamage, 0) : 0) * 1.2;
-        // Guaranteed crit for explosive shot
-        const dmg = totalDmg * 1.6;
-        
-        // Fire one large explosive bullet that seeks enemies
-        const explosiveBullet = shootBullet(s, p.x, p.y, angle, dmg, 100, { // Very slow for visibility
-          r: 7.0, // Large bullet
-          pierce: 0, // No pierce - it will stick to enemy
-          color: "#ffaa00", // Orange/gold color
-          crit: true, // Always crit
-          knock: 0, // No knockback on hit (will explode later)
-          bounces: 0,
-          effect: null,
-          life: 12.0, // Longer life since it's very slow
-        });
-        
-        // Mark this bullet as injectable explosive
-        explosiveBullet.explosive = true;
-        explosiveBullet.injected = false; // Not yet injected onto enemy
-        explosiveBullet.injectedEnemy = null; // Will store reference to enemy
-        explosiveBullet.explodeAfter = 2.0; // Explode 2 seconds after injection
-        explosiveBullet.explosionRadius = 120; // Large explosion radius
-        explosiveBullet.explosionDmg = dmg * 0.8; // Explosion damage (reduced from 1.2x)
-        explosiveBullet.seeking = true; // Bullet seeks nearest enemy
-        explosiveBullet.playerAbilityRef = null; // No longer needed since cooldown starts immediately
-        
-        // Visual effects
-        addParticle(s, p.x, p.y, 20, 40);
-        playBeep({ type: "square", f0: 200, f1: 120, dur: 0.12, gain: 0.18, pan: 0 }); // Deeper, more powerful sound
-      } else {
-        // No target found - still fire bullet (it will seek when enemies spawn)
-        const totalDmg = (p.weapons ? p.weapons.reduce((sum, w) => sum + w.weaponDamage, 0) : 0) * 1.2;
-        const dmg = totalDmg * 1.6;
-        
-        const explosiveBullet = shootBullet(s, p.x, p.y, 0, dmg, 100, {
-          r: 7.0,
-          pierce: 0,
-          color: "#ffaa00",
-          crit: true,
-          knock: 0,
-          bounces: 0,
-          effect: null,
-          life: 12.0,
-        });
-        
-        explosiveBullet.explosive = true;
-        explosiveBullet.injected = false;
-        explosiveBullet.injectedEnemy = null;
-        explosiveBullet.explodeAfter = 2.0;
-        explosiveBullet.explosionRadius = 120;
-        explosiveBullet.explosionDmg = dmg * 0.8;
-        explosiveBullet.seeking = true;
-        explosiveBullet.playerAbilityRef = null;
-        
-        // Visual effects
-        addParticle(s, p.x, p.y, 20, 40);
-        playBeep({ type: "square", f0: 200, f1: 120, dur: 0.12, gain: 0.18, pan: 0 });
-      }
-      return;
-    }
-
-    if (p.abilityId === "slam") {
-      const r = 95 * p.sizeMult;
-      // Calculate actual damage from weapons
-      const totalWeaponDmg = p.weapons ? p.weapons.reduce((sum, w) => sum + w.weaponDamage, 0) : 0;
-      const dmg = totalWeaponDmg * 1.35;
-      bumpShake(s, 8, 0.12); // Stronger screen shake
-      s.hitStopT = Math.max(s.hitStopT, 0.02);
-      addParticle(s, p.x, p.y, 22, 40);
-      
-      // Shockwave effect for slam (replaces slice)
-      for (let i = 0; i < 3; i++) {
-        s.floaters.push({
-          x: p.x,
-          y: p.y,
-          t: i * 0.05,
-          life: 0.4,
-          type: "shockwave",
-          r: r * 0.3 + i * r * 0.35,
-          color: i === 0 ? "#ff7a3d" : i === 1 ? "#ffaa44" : "#ffd44a",
-        });
-      }
-      
-      // Impact particles
-      for (let i = 0; i < 12; i++) {
-        const angle = (Math.PI * 2 * i) / 12;
-        s.floaters.push({
-          x: p.x,
-          y: p.y,
-          t: 0,
-          life: 0.35,
-          type: "particle",
-          vx: Math.cos(angle) * (80 + Math.random() * 40),
-          vy: Math.sin(angle) * (80 + Math.random() * 40),
-          color: "#ffd44a",
-        });
-      }
-
-      for (const e of s.enemies) {
-        if (e.hp <= 0) continue;
-        const d2v = dist2(p.x, p.y, e.x, e.y);
-        if (d2v <= (r + e.r) * (r + e.r)) {
-          e.hp -= dmg;
-          e.hitT = 0.14;
-          const dealt = Math.max(1, Math.round(dmg));
-          pushCombatText(s, e.x, e.y - 14, String(dealt), "#ffd44a", { size: 14, life: 0.85, crit: true });
-
-          const dx = e.x - p.x;
-          const dy = e.y - p.y;
-          const dd = Math.hypot(dx, dy) || 1;
-          // Increased knockback for slam
-          const knockbackDist = 95;
-          e.x += (dx / dd) * knockbackDist;
-          e.y += (dy / dd) * knockbackDist;
-        }
-      }
-
-      playBeep({ type: "square", f0: 160, f1: 90, dur: 0.12, gain: 0.18, pan: 0 });
-      p.abilityT = p.abilityCd * (p.abilityCdMult || 1);
-    }
-
+    return useAbilityFn(s, acquireTarget, shootBullet, playBeep, keysRef);
   }
 
   function update(s, dt) {
@@ -2365,3 +2092,4 @@ export default function NeonPitRoguelikeV3() {
     </div>
   );
 }
+
