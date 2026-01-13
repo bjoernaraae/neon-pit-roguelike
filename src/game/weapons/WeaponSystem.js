@@ -21,21 +21,20 @@ export function fireWeapon(s, acquireTargetFn, shootBulletFn, pushCombatTextFn, 
   const p = s.player;
   if (!p.weapons || p.weapons.length === 0) return;
 
-  // Check if we have any aura weapons (they don't need targets or line of sight)
+  // Check if we have any aura weapons (they don't need targets)
   const hasAuraWeapons = p.weapons.some(w => w.weaponMode === "aura");
 
   const tgt = acquireTargetFn(s, p.x, p.y);
   // Only require target if we don't have aura weapons
   if (!tgt && !hasAuraWeapons) return;
 
-  // Only check line of sight if we don't have aura weapons (aura weapons don't need it)
-  if (s.levelData && tgt && !hasAuraWeapons && !hasLineOfSight(p.x, p.y, tgt.x, tgt.y, s.levelData, 10)) {
-    return; // No line of sight, can't shoot
+  // Calculate direction to target (for non-aura weapons)
+  let dx = 0, dy = 0, baseA = 0;
+  if (tgt) {
+    dx = tgt.x - p.x;
+    dy = tgt.y - p.y;
+    baseA = Math.atan2(dy, dx);
   }
-
-  const dx = tgt.x - p.x;
-  const dy = tgt.y - p.y;
-  const baseA = Math.atan2(dy, dx);
 
   const speed = 580 * p.projectileSpeed; // Reduced from 740 for slower-paced gameplay
   const bulletR = 4.1 * p.sizeMult;
@@ -61,6 +60,11 @@ export function fireWeapon(s, acquireTargetFn, shootBulletFn, pushCombatTextFn, 
       }
       
       if (weapon.attackT > 0) continue; // Weapon is on cooldown
+
+      // Check line of sight for non-aura weapons
+      if (weapon.weaponMode !== "aura" && s.levelData && tgt && !hasLineOfSight(p.x, p.y, tgt.x, tgt.y, s.levelData, 10)) {
+        continue; // No line of sight, skip this weapon
+      }
 
       // Flamewalker - spawn fire under player feet (independent of combat)
       if (weapon.id === "flamewalker" && weapon.weaponMode === "aura") {
