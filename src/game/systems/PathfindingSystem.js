@@ -259,36 +259,35 @@ export function getFlowDirection(x, y, flowFieldData) {
   }
   
   // Get the 4 cardinal neighbors for gradient calculation
-  // Left: (centerX - 1, centerY), Right: (centerX + 1, centerY)
-  // Top: (centerX, centerY - 1), Bottom: (centerX, centerY + 1)
-  const leftX = Math.max(0, clampedCenterX - 1);
-  const rightX = Math.min(gridW - 1, clampedCenterX + 1);
-  const topY = Math.max(0, clampedCenterY - 1);
-  const bottomY = Math.min(gridH - 1, clampedCenterY + 1);
-  
-  // Sample distances from the 4 cardinal neighbors
-  // Left and Right use the same Y coordinate (centerY)
-  // Top and Bottom use the same X coordinate (centerX)
-  let distLeft = distances[clampedCenterY][leftX];
-  let distRight = distances[clampedCenterY][rightX];
-  let distTop = distances[topY][clampedCenterX];
-  let distBottom = distances[bottomY][clampedCenterX];
-  
+  // Use asymmetric sampling near boundaries to maintain gradient accuracy
+  const canSampleLeft = clampedCenterX > 0;
+  const canSampleRight = clampedCenterX < gridW - 1;
+  const canSampleTop = clampedCenterY > 0;
+  const canSampleBottom = clampedCenterY < gridH - 1;
+
+  // Sample distances with boundary awareness
+  let distLeft = canSampleLeft ? distances[clampedCenterY][clampedCenterX - 1] : centerDist;
+  let distRight = canSampleRight ? distances[clampedCenterY][clampedCenterX + 1] : centerDist;
+  let distTop = canSampleTop ? distances[clampedCenterY - 1][clampedCenterX] : centerDist;
+  let distBottom = canSampleBottom ? distances[clampedCenterY + 1][clampedCenterX] : centerDist;
+
   // Handle Infinity neighbors by using center distance (prevents gradient from breaking near walls)
-  // This allows gradient to still work when some neighbors are walls
+  // This allows gradient to still work when some neighbors are walls or boundaries
   if (distLeft === Infinity) distLeft = centerDist;
   if (distRight === Infinity) distRight = centerDist;
   if (distTop === Infinity) distTop = centerDist;
   if (distBottom === Infinity) distBottom = centerDist;
   
-  // Step 2: Calculate gradient vector using finite differences
+  // Step 2: Calculate gradient vector using finite differences with boundary awareness
+  // Use actual sampling distances to maintain accuracy near boundaries
+  const xSampleDist = canSampleLeft && canSampleRight ? 2 * gridSize : gridSize;
+  const ySampleDist = canSampleTop && canSampleBottom ? 2 * gridSize : gridSize;
+
+  // Gradient formula: grad_x = (distRight - distLeft) / sampleDistance
   // The gradient of a distance field points toward increasing distance
   // We want to go toward decreasing distance (target), so we use the negative gradient
-  // Gradient formula: grad_x = (distRight - distLeft) / (2 * gridSize)
-  // If target is to the right: distRight < distLeft, so grad_x < 0 (points left, toward higher distance)
-  // Negative gradient: -grad_x > 0 (points right, toward lower distance/target) ✓
-  const gradX = (distRight - distLeft) / (2 * gridSize);
-  const gradY = (distBottom - distTop) / (2 * gridSize);
+  const gradX = (distRight - distLeft) / xSampleDist;
+  const gradY = (distBottom - distTop) / ySampleDist;
   
   // Negate to get direction toward target (decreasing distance)
   const vx = -gradX;
