@@ -104,7 +104,8 @@ export function handleAdminClick(x, y, w, h, stateRef, uiRef, content, handleAdm
  * Execute admin panel actions
  */
 export function handleAdminAction(s, action, INTERACT, startBossFn, spawnInteractableFn, applyWeaponFn, setUi, content, RARITY) {
-  if (!s || !s.running) return;
+  // Note: Don't check s.running here - admin panel is used from pause menu when s.running=false
+  if (!s || !s.player) return;
   const p = s.player;
   
   switch (action) {

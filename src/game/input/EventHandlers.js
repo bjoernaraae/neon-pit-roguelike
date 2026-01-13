@@ -403,6 +403,14 @@ export function createPointerDownHandler(context) {
       const w = rect.width;
       const h = rect.height;
       
+      // CRITICAL: Check admin panel FIRST before pause menu buttons
+      // Admin panel buttons can overlap with pause menu button coordinates
+      if (u.showAdmin) {
+        console.log("Admin panel click:", x, y);
+        handleAdminClick(x, y, w, h, u, content);
+        return;
+      }
+      
       const buttonY = 180;
       const buttonH = 50;
       const buttonSpacing = 70;
@@ -476,13 +484,6 @@ export function createPointerDownHandler(context) {
         setUi(nextUi);
         updateMusicVolume();
         return;
-      }
-      
-      // Admin panel click handling
-      if (u.showAdmin) {
-        console.log("Admin panel click:", x, y);
-        handleAdminClick(x, y, w, h, u, content);
-        return; // CRITICAL: Return after handling admin click
       }
       
       return;
