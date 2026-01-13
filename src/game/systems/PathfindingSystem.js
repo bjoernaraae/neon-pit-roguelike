@@ -157,19 +157,21 @@ export function generateFlowField(targetX, targetY, grid, gridSize = 10) {
       // Only process walkable tiles (value = 1)
       if (grid[ny][nx] !== 1) continue; // Walls have infinite cost (already set)
       
-      // Step 3: Strict diagonal validation - only allow if both adjacent cardinals are walkable
-      // Check the two cardinal neighbors that form the diagonal
+      // Step 3: Relaxed diagonal validation for doorways and narrow passages
+      // Check if the diagonal move would allow clipping through corners
       const card1X = current.x + dx; // One cardinal component
       const card1Y = current.y;
       const card2X = current.x;
       const card2Y = current.y + dy; // Other cardinal component
-      
-      // Both cardinal tiles must be walkable
-      const card1Walkable = card1X >= 0 && card1X < gridW && card1Y >= 0 && card1Y < gridH && grid[card1Y][card1X] === 1;
-      const card2Walkable = card2X >= 0 && card2X < gridW && card2Y >= 0 && card2Y < gridH && grid[card2Y][card2X] === 1;
-      
-      if (!card1Walkable || !card2Walkable) {
-        continue; // Skip this diagonal move - would clip through corner
+
+      // Check if both cardinal tiles exist and are walls (would cause clipping)
+      const card1IsWall = card1X >= 0 && card1X < gridW && card1Y >= 0 && card1Y < gridH && grid[card1Y][card1X] === 0;
+      const card2IsWall = card2X >= 0 && card2X < gridW && card2Y >= 0 && card2Y < gridH && grid[card2Y][card2X] === 0;
+
+      // Allow diagonal move if at least one cardinal path is clear (don't block doorways)
+      // Only block if BOTH cardinal directions are walled off
+      if (card1IsWall && card2IsWall) {
+        continue; // Skip this diagonal move - would definitely clip through corner
       }
       
       // Step 1: Apply wall influence cost penalty
