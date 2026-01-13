@@ -19,6 +19,13 @@ import battleMusicUrl from "../audio/music/Battle.mp3";
 import { ensureAudio as ensureAudioFn, applyAudioToggles as applyAudioTogglesFn, updateMusicVolume as updateMusicVolumeFn } from "../audio/AudioManager.js";
 import { updateMusic as updateMusicFn, tickMusic as tickMusicFn } from "../audio/MusicController.js";
 import { playBeep as playBeepFn, sfxShoot as sfxShootFn, sfxHit as sfxHitFn, sfxKill as sfxKillFn, sfxCoin as sfxCoinFn, sfxCrit as sfxCritFn, sfxLevelUp as sfxLevelUpFn, sfxLevel as sfxLevelFn, sfxBoss as sfxBossFn, sfxGameOver as sfxGameOverFn, sfxInteract as sfxInteractFn } from "../audio/SoundEffects.js";
+import { pushCombatText as pushCombatTextFn } from "../game/effects/CombatText.js";
+import { acquireTarget as acquireTargetFn } from "../game/systems/TargetingSystem.js";
+import { makePlayer as makePlayerFn } from "../game/player/PlayerFactory.js";
+import { shootBullet as shootBulletFn } from "../game/projectiles/BulletFactory.js";
+import { spawnInteractable as spawnInteractableFn } from "../game/interactables/InteractableSpawner.js";
+import { startBoss as startBossFn } from "../game/enemies/BossSpawner.js";
+import { spawnEnemy as spawnEnemyFn } from "../game/enemies/EnemySpawner.js";
 
 // Aliases for backward compatibility
 const getVisualCubeRadius = getVisualRadius;
@@ -306,252 +313,21 @@ export default function NeonPitRoguelikeV3() {
     }
   }
 
+  // Spawning & Factory wrappers - delegate to extracted modules
   function spawnEnemy(s) {
-    const { w, h, padding } = s.arena;
-    const p = s.player;
-    const minDistFromPlayer = 120;
-    
-    let x = 0;
-    let y = 0;
-    let validSpawn = false;
-    let attempts = 0;
-    
-    // Try to spawn in rooms/corridors if level data exists
-    if (s.levelData) {
-      // Combine rooms and corridors for spawn selection
-      const allAreas = [...(s.levelData.rooms || []), ...(s.levelData.corridors || [])];
-      if (allAreas.length > 0) {
-        while (!validSpawn && attempts < 50) {
-          // Pick a random room or corridor
-          const area = allAreas[Math.floor(Math.random() * allAreas.length)];
-          x = rand(area.x + 20, area.x + area.w - 20);
-          y = rand(area.y + 20, area.y + area.h - 20);
-          
-          // Check distance from player
-          const dist2 = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
-          if (dist2 >= minDistFromPlayer * minDistFromPlayer) {
-            validSpawn = true;
-          }
-          attempts++;
-        }
-      }
-    }
-    
-    // Fallback to edge spawning if no level data or all attempts failed
-    if (!validSpawn) {
-      attempts = 0;
-      while (!validSpawn && attempts < 20) {
-        const side = Math.floor(Math.random() * 4);
-        const levelW = s.levelData ? s.levelData.w : w;
-        const levelH = s.levelData ? s.levelData.h : h;
-        
-    if (side === 0) {
-          x = rand(padding, levelW - padding);
-      y = padding;
-    } else if (side === 1) {
-          x = levelW - padding;
-          y = rand(padding, levelH - padding);
-    } else if (side === 2) {
-          x = rand(padding, levelW - padding);
-          y = levelH - padding;
-    } else {
-      x = padding;
-          y = rand(padding, levelH - padding);
-        }
-        
-        // Check distance from player
-        const dist2 = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
-        if (dist2 >= minDistFromPlayer * minDistFromPlayer) {
-          validSpawn = true;
-        }
-        attempts++;
-      }
-    }
-    
-    // Final fallback - spawn anywhere
-    if (!validSpawn) {
-      const levelW = s.levelData ? s.levelData.w : w;
-      const levelH = s.levelData ? s.levelData.h : h;
-      x = rand(padding, levelW - padding);
-      y = rand(padding, levelH - padding);
-    }
-
-    // Get enemy tier weights based on current floor (from enemyData.js)
-    const tierWeights = getEnemyTierWeights(s.floor);
-    const tier = pickWeighted(tierWeights).t;
-
-    // Determine if this is an elite enemy (using ELITE_CONFIG from enemyData.js)
-    const eliteChance = ELITE_CONFIG.BASE_CHANCE + (s.floor - 1) * ELITE_CONFIG.FLOOR_SCALING;
-    const isElite = Math.random() < eliteChance;
-    
-    // Golden elite (drops extra gold)
-    const goldenEliteChance = ELITE_CONFIG.GOLDEN_BASE_CHANCE + (s.floor - 1) * ELITE_CONFIG.GOLDEN_FLOOR_SCALING;
-    const isGoldenElite = isElite && Math.random() < goldenEliteChance;
-
-    // Get base stats from enemyData.js
-    const stats = ENEMY_BASE_STATS[tier];
-    const baseHp = stats.hp;
-    const baseSp = stats.speed;
-    const r = stats.radius;
-
-    // Elite enemies are much tougher (using ELITE_CONFIG multipliers)
-    const hpMult = isElite ? ELITE_CONFIG.HP_MULTIPLIER : 1.0;
-    const sizeMult = isElite ? ELITE_CONFIG.SIZE_MULTIPLIER : 1.0;
-    const speedMult = isElite ? ELITE_CONFIG.SPEED_MULTIPLIER : 1.0;
-    const finalHp = Math.round(baseHp * hpMult);
-    const finalR = r * sizeMult;
-    const finalSpeed = baseSp * speedMult;
-    
-    // Elite special abilities and weaknesses (from enemyData.js)
-    let eliteAbility = null;
-    let eliteWeakness = null;
-    let eliteArmor = 0; // Damage reduction (0-1)
-    
-    if (isElite) {
-      eliteAbility = getRandomEliteAbility();
-      eliteWeakness = getRandomEliteWeakness();
-      
-      if (eliteAbility === "shield") {
-        eliteArmor = ELITE_CONFIG.ARMOR.SHIELD; // 30% damage reduction
-      }
-    }
-
-    // Coin calculation: base coin from enemyData.js, scales with HP
-    let baseCoin = stats.baseCoin;
-    
-    // Scale coin with HP (harder enemies = more gold)
-    const coinFromHp = Math.round(finalHp / 40); // 1 coin per 40 HP
-    let finalCoin = baseCoin + coinFromHp;
-    
-    if (isElite) {
-      finalCoin = Math.round(finalCoin * ELITE_CONFIG.COIN_MULTIPLIER); // Elites give 2.5x base
-    }
-    if (isGoldenElite) {
-      finalCoin = Math.round(finalCoin * ELITE_CONFIG.GOLDEN_COIN_MULTIPLIER); // Golden elites give 3x more
-    }
-    
-    // Reduce gold gain by 50%
-    finalCoin = Math.round(finalCoin * 0.5);
-
-    s.enemies.push({
-      id: Math.random().toString(16).slice(2),
-      x,
-      y,
-      r: finalR,
-      hp: finalHp,
-      maxHp: finalHp,
-      speed: finalSpeed,
-      tier,
-      isElite,
-      isGoldenElite,
-      eliteAbility,
-      eliteWeakness,
-      eliteArmor,
-      eliteRegenT: 0, // Regeneration timer
-      eliteTeleportT: 0, // Teleport cooldown
-      hitT: 0,
-      spitT: 0,
-      phase: rand(0, Math.PI * 2),
-      xp: Math.round(stats.xp * p.difficultyTome * (isElite ? ELITE_CONFIG.XP_MULTIPLIER : 1)),
-      coin: finalCoin,
-      poisonT: 0,
-      poisonDps: 0,
-      freezeT: 0, // Keep for backwards compatibility
-      slowT: 0, // Slow effect (replaces freeze)
-      slowMult: 1.0, // Speed multiplier when slowed
-      burnT: 0,
-      burnDps: 0,
-      contactCd: 0, // Start at 0 so enemies can hit immediately when they touch
-      z: 0, // Initialize z position for isometric depth
-    });
+    spawnEnemyFn(s);
   }
 
   function acquireTarget(s, fromX, fromY) {
-    let best = null;
-    let bestD2 = Infinity;
-
-    if (s.boss.active) {
-      best = { x: s.boss.x, y: s.boss.y, kind: "boss" };
-      bestD2 = dist2(fromX, fromY, s.boss.x, s.boss.y);
-    }
-
-    for (const e of s.enemies) {
-      if (e.hp <= 0) continue;
-      const d2v = dist2(fromX, fromY, e.x, e.y);
-      if (d2v < bestD2) {
-        bestD2 = d2v;
-        best = { x: e.x, y: e.y, kind: "enemy" };
-      }
-    }
-
-    return best;
+    return acquireTargetFn(s, fromX, fromY);
   }
 
-
   function pushCombatText(s, x, y, text, col, opts = {}) {
-    s.floaters.push({
-      x: x + rand(-10, 10),
-      y: y + rand(-10, 6),
-      text,
-      t: 0,
-      life: opts.life ?? 0.75,
-      col,
-      size: opts.size ?? 12,
-      crit: !!opts.crit,
-    });
+    pushCombatTextFn(s, x, y, text, col, opts);
   }
 
   function shootBullet(s, x, y, angle, dmg, speed, opts) {
-    const vx = Math.cos(angle) * speed;
-    const vy = Math.sin(angle) * speed;
-
-    const bullet = {
-      x,
-      y,
-      px: x,
-      py: y,
-      vx,
-      vy,
-      r: opts?.r ?? 4,
-      life: opts?.life ?? 1.05,
-      t: 0,
-      dmg,
-      pierce: opts?.pierce ?? 0,
-      enemy: !!opts?.enemy,
-      color: opts?.color ?? "#e6e8ff",
-      crit: !!opts?.crit,
-      knock: opts?.knock ?? 0,
-      bounces: opts?.bounces ?? 0,
-      effect: opts?.effect ?? null,
-      splashR: opts?.splashR ?? 0,
-      glow: opts?.glow ?? false, // For firey effects
-      boomerang: opts?.boomerang ?? false, // For boomerang weapons
-      startX: x, // For boomerang return
-      startY: y, // For boomerang return
-      maxDist: opts?.maxDist ?? 400, // Max distance before returning
-      originalSpeed: speed, // Store original speed for return phase
-      hitEnemies: new Set(), // Track hit enemies for pierce/boomerang
-      isBone: opts?.isBone ?? false, // For bone rotation
-      rotation: opts?.isBone ? angle : (opts?.boomerang ? 0 : angle), // Initial rotation angle
-      weaponId: opts?.weaponId, // Track which weapon this belongs to
-      explosive: opts?.explosive || false, // Delayed explosive bullet
-      injected: opts?.injected || false, // Whether bullet is injected onto enemy
-      injectedEnemy: opts?.injectedEnemy || null, // Reference to enemy bullet is attached to
-      explodeAfter: opts?.explodeAfter || 0, // Time until explosion
-      explosionRadius: opts?.explosionRadius || 0, // Explosion AoE radius
-      explosionDmg: opts?.explosionDmg || 0, // Explosion damage
-      seeking: opts?.seeking || false, // Whether bullet seeks nearest enemy
-    };
-
-    s.bullets.push(bullet);
-
-    const xNorm = clamp((x / (s.arena.w || 1)) * 2 - 1, -1, 1);
-    if (!opts?.enemy) {
-      const soundVariant = opts?.soundVariant ?? Math.floor(Math.random() * 3);
-      sfxShoot(xNorm, soundVariant);
-  }
-
-    return bullet;
+    return shootBulletFn(s, x, y, angle, dmg, speed, opts, sfxShoot);
   }
 
   function applyWeapon(p, weaponDef, rarity, previewOnly, forcedUpgradeType = null) {
@@ -1171,73 +947,7 @@ export default function NeonPitRoguelikeV3() {
   }
 
   function spawnInteractable(s, kind) {
-    const { w, h, padding } = s.arena;
-    let x, y;
-    let attempts = 0;
-    const maxAttempts = 50;
-    
-    // Try to find a walkable position
-    do {
-      // For chests, spawn in random rooms across the level for better distribution
-      if (kind === INTERACT.CHEST && s.levelData && s.levelData.rooms && s.levelData.rooms.length > 0) {
-        // Pick a random room
-        const room = s.levelData.rooms[Math.floor(Math.random() * s.levelData.rooms.length)];
-        // Spawn in the center area of the room
-        x = room.x + rand(room.w * 0.3, room.w * 0.7);
-        y = room.y + rand(room.h * 0.3, room.h * 0.7);
-      } else if (s.levelData && s.levelData.rooms && s.levelData.rooms.length > 0) {
-        // For other interactables, try to spawn in a random room first
-        const room = s.levelData.rooms[Math.floor(Math.random() * s.levelData.rooms.length)];
-        x = room.x + rand(room.w * 0.3, room.w * 0.7);
-        y = room.y + rand(room.h * 0.3, room.h * 0.7);
-      } else if (s.levelData) {
-        // Fallback to level bounds
-        x = rand(padding + 60, s.levelData.w - padding - 60);
-        y = rand(padding + 60, s.levelData.h - padding - 60);
-      } else {
-        // Fallback to arena bounds
-        x = rand(padding + 60, w - padding - 60);
-        y = rand(padding + 60, h - padding - 60);
-      }
-      
-      // Ensure position is walkable
-      if (s.levelData && isPointWalkable(x, y, s.levelData, 20)) {
-        break; // Found walkable position
-      }
-      
-      attempts++;
-    } while (attempts < maxAttempts);
-    
-    // If still not walkable after max attempts, find nearest walkable position
-    if (s.levelData && !isPointWalkable(x, y, s.levelData, 20)) {
-      const walkable = findNearestWalkable(x, y, s.levelData, 20);
-      x = walkable.x;
-      y = walkable.y;
-    }
-
-    let cost = 0;
-    if (kind === INTERACT.CHEST) cost = chestCost(s.chestOpens, s.floor);
-    // Shrines are now free (repurposed as permanent buff stations)
-    if (kind === INTERACT.MICROWAVE) cost = 0; // Free
-    if (kind === INTERACT.GREED) cost = Math.round(8 + s.floor * 2);
-    if (kind === INTERACT.SHRINE) cost = 0; // Free
-    if (kind === INTERACT.MAGNET_SHRINE) cost = 0; // Free (but these won't spawn anymore)
-    if (kind === INTERACT.BOSS_TP) {
-      // Boss portal cost: 20% of current gold, minimum 100 (calculated dynamically)
-      // Set to -1 as a flag to calculate dynamically
-      cost = -1;
-    }
-
-    s.interact.push({
-      id: Math.random().toString(16).slice(2),
-      kind,
-      x,
-      y,
-      r: 16,
-      cost,
-      used: false,
-      t: 0,
-    });
+    spawnInteractableFn(s, kind);
   }
 
   function rollChoicesOfType(s, forcedType = null) {
@@ -1678,130 +1388,11 @@ export default function NeonPitRoguelikeV3() {
   }
 
   function startBoss(s, seconds, bossX = null, bossY = null) {
-    const { w, padding } = s.arena;
-    s.boss.active = true;
-    s.boss.r = 38;
-    // Boss HP scales with floor - F1 is easier
-    // F1: 1000 HP, then +300 per floor (scaled down from previous)
-    s.boss.maxHp = Math.round(1000 + (s.floor - 1) * 300);
-    s.boss.hp = s.boss.maxHp;
-    // Spawn boss at teleporter location if provided, otherwise center
-    // Ensure boss doesn't spawn on top of player
-    const p = s.player;
-    if (bossX !== null && bossY !== null) {
-      // Check distance from player, if too close, offset
-      const dist = Math.hypot(bossX - p.x, bossY - p.y);
-      if (dist < 150) {
-        // Too close, offset away from player
-        const angle = Math.atan2(bossY - p.y, bossX - p.x);
-        s.boss.x = p.x + Math.cos(angle) * 150;
-        s.boss.y = p.y + Math.sin(angle) * 150;
-      } else {
-        s.boss.x = bossX;
-        s.boss.y = bossY;
-      }
-    } else {
-      // Spawn away from player if no teleporter
-      const angle = Math.random() * Math.PI * 2;
-      s.boss.x = p.x + Math.cos(angle) * 200;
-      s.boss.y = p.y + Math.sin(angle) * 200;
-    }
-    s.boss.timeLeft = seconds;
-    s.boss.angle = 0; // Initialize angle for rotation
-    s.boss.enraged = false;
-
-    // Initialize boss controller with abilities - scale by floor
-    // F1 boss is easier (fewer abilities, longer cooldowns, less damage)
-    // Higher floors get more abilities and harder difficulty
-    try {
-      const floor = s.floor;
-      const abilities = [];
-      
-      // Base abilities (always available)
-      const baseCooldown = 4.0 + (floor - 1) * 0.3; // Slightly faster on higher floors
-      abilities.push(new ConeAttackAbility({ 
-        cooldown: baseCooldown * 1.2, 
-        range: 350 + floor * 10,
-        phase2Effect: 'burning_ground' 
-      }));
-      
-      // F1: Only basic abilities
-      if (floor >= 1) {
-        abilities.push(new LineDashAbility({ 
-          cooldown: baseCooldown * 1.5,
-          dashDistance: 250 + floor * 15
-        }));
-      }
-      
-      // F2+: Add Ring Pulse
-      if (floor >= 2) {
-        abilities.push(new RingPulseAbility({ 
-          cooldown: baseCooldown * 1.8,
-          maxRadius: 300 + floor * 15
-        }));
-      }
-      
-      // F3+: Add Charge
-      if (floor >= 3) {
-        abilities.push(new ChargeAbility({ 
-          cooldown: baseCooldown * 2.0,
-          chargeDistance: 350 + floor * 20
-        }));
-      }
-      
-      // F4+: Add Teleport
-      if (floor >= 4) {
-        abilities.push(new TeleportAbility({ 
-          cooldown: baseCooldown * 2.5,
-          teleportDistance: 200 + floor * 10
-        }));
-      }
-      
-      // F5+: Add Multi-Shot
-      if (floor >= 5) {
-        abilities.push(new MultiShotAbility({ 
-          cooldown: baseCooldown * 2.2,
-          shotCount: 5 + Math.floor((floor - 5) / 2), // More shots on higher floors
-          range: 400 + floor * 10
-        }));
-      }
-      
-      s.boss.controller = new BossController(s.boss, abilities);
-    } catch (error) {
-      console.error('Error initializing boss controller:', error);
-      // Fallback: set controller to null to prevent crashes
-      s.boss.controller = null;
-    }
-
-    bumpShake(s, 8, 0.1);
-    sfxBoss();
+    startBossFn(s, seconds, bossX, bossY, bumpShake, sfxBoss);
   }
 
   function makePlayer(charId, w, h) {
-    // Use createPlayerWithCharacter from characterData.js
-    const c = content.characters.find((x) => x.id === charId) || content.characters[0];
-    const base = createPlayerWithCharacter(c, w, h);
-    
-    // All character stat overrides are handled in createPlayerWithCharacter
-    // Just apply starting weapon and character metadata
-
-    const wDef = content.weapons.find((ww) => ww.id === c.startWeapon);
-    if (wDef) {
-      base.weapons = [];
-      base.collectedWeapons = [];
-      base.collectedTomes = [];
-      base.collectedItems = [];
-      applyWeapon(base, wDef, RARITY.COMMON, false);
-      // Track starting weapon
-      if (!base.collectedWeapons.find(w => w.id === wDef.id)) {
-        base.collectedWeapons.push({ id: wDef.id, name: wDef.name, icon: wDef.icon });
-      }
-    }
-
-    base.charId = c.id;
-    base.charName = c.name;
-
-    return base;
+    return makePlayerFn(charId, w, h, content, applyWeapon);
   }
 
   function newRun(prevBest = 0, charId = "cowboy") {
