@@ -16,6 +16,9 @@ import { ENEMY_BASE_STATS, getEnemyTierWeights, ELITE_CONFIG, getRandomEliteAbil
 import { createPlayerWithCharacter } from "../data/characterData.js";
 import menuMusicUrl from "../audio/music/Menu.mp3";
 import battleMusicUrl from "../audio/music/Battle.mp3";
+import { ensureAudio as ensureAudioFn, applyAudioToggles as applyAudioTogglesFn, updateMusicVolume as updateMusicVolumeFn } from "../audio/AudioManager.js";
+import { updateMusic as updateMusicFn, tickMusic as tickMusicFn } from "../audio/MusicController.js";
+import { playBeep as playBeepFn, sfxShoot as sfxShootFn, sfxHit as sfxHitFn, sfxKill as sfxKillFn, sfxCoin as sfxCoinFn, sfxCrit as sfxCritFn, sfxLevelUp as sfxLevelUpFn, sfxLevel as sfxLevelFn, sfxBoss as sfxBossFn, sfxGameOver as sfxGameOverFn, sfxInteract as sfxInteractFn } from "../audio/SoundEffects.js";
 
 // Aliases for backward compatibility
 const getVisualCubeRadius = getVisualRadius;
@@ -163,379 +166,69 @@ export default function NeonPitRoguelikeV3() {
 
   const stateRef = useRef(null);
 
+  // Audio system wrappers - delegate to audio modules
   function ensureAudio() {
-    const a = audioRef.current;
-    if (a.started) return;
-
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) return;
-
-    const ctx = new AudioCtx();
-    const master = ctx.createGain();
-    master.gain.value = 0.85;
-    master.connect(ctx.destination);
-
-    const musicGain = ctx.createGain();
-    musicGain.gain.value = 0.55;
-    musicGain.connect(master);
-
-    const sfxGain = ctx.createGain();
-    sfxGain.gain.value = 0.95;
-    sfxGain.connect(master);
-
-    // Initialize HTML5 Audio elements for music
-    const menuMusic = new Audio(menuMusicUrl);
-    menuMusic.loop = true;
-    menuMusic.volume = 0;
-    menuMusic.preload = "auto";
-
-    const battleMusic = new Audio(battleMusicUrl);
-    battleMusic.loop = true;
-    battleMusic.volume = 0;
-    battleMusic.preload = "auto";
-
-    // Handle audio context resume on user interaction
-    const resumeAudio = () => {
-      if (ctx.state === "suspended") {
-        ctx.resume().catch(() => {});
-      }
-      // Try to play music (will work after user interaction)
-      if (a.currentTrack === "menu" && menuMusic.paused) {
-        menuMusic.play().catch(() => {});
-      }
-      if (a.currentTrack === "battle" && battleMusic.paused) {
-        battleMusic.play().catch(() => {});
-      }
-    };
-    
-    // Pause initially - will start playing when updateMusic is called
-    menuMusic.pause();
-    battleMusic.pause();
-
-    a.ctx = ctx;
-    a.master = master;
-    a.musicGain = musicGain;
-    a.sfxGain = sfxGain;
-    a.menuMusic = menuMusic;
-    a.battleMusic = battleMusic;
-    a.started = true;
-    a.resumeAudio = resumeAudio;
-
-    applyAudioToggles(uiRef.current);
+    ensureAudioFn(audioRef, uiRef, menuMusicUrl, battleMusicUrl, applyAudioToggles);
   }
 
   function applyAudioToggles(nextUi) {
-    const a = audioRef.current;
-    if (!a.started) return;
-
-    a.muted = !!nextUi.muted;
-    a.musicOn = !!nextUi.musicOn;
-    a.sfxOn = !!nextUi.sfxOn;
-
-    if (a.master) a.master.gain.value = a.muted ? 0 : 0.85;
-    if (a.musicGain) a.musicGain.gain.value = a.musicOn && !a.muted ? 0.55 : 0;
-    if (a.sfxGain) a.sfxGain.gain.value = a.sfxOn && !a.muted ? 0.95 : 0;
-
-    // Update music volume based on settings
-    updateMusicVolume();
+    applyAudioTogglesFn(audioRef, nextUi, updateMusicVolume);
   }
 
   function updateMusicVolume() {
-    const a = audioRef.current;
-    if (!a.started) return;
-    
-    // Get muted state and volume from UI state (more reliable)
-    const u = uiRef.current;
-    const isMuted = u ? u.muted : a.muted;
-    const musicVolume = u ? (u.musicVolume !== undefined ? u.musicVolume : 0.5) : 0.5;
-    
-    if (!a.menuMusic || !a.battleMusic) return;
-
-    const baseVolume = a.musicOn && !isMuted ? musicVolume : 0;
-    const targetVolume = a.muffled ? baseVolume * a.muffledVolume : baseVolume;
-    
-    // STABILIZE AUDIO: Only set volume, don't set to 0 (let muted state handle that)
-    if (a.menuMusic) {
-      if (a.currentTrack === "menu") {
-        a.menuMusic.volume = targetVolume;
-      }
-    }
-    if (a.battleMusic) {
-      if (a.currentTrack === "battle") {
-        a.battleMusic.volume = targetVolume;
-      }
-    }
+    updateMusicVolumeFn(audioRef, uiRef);
   }
 
   function updateMusic(dt) {
-    const a = audioRef.current;
-    // Ensure audio is initialized
-    if (!a.started) {
-      ensureAudio();
-      return;
-    }
-    if (!a.menuMusic || !a.battleMusic) return;
-
-    const u = uiRef.current;
-    const s = stateRef.current;
-
-    // Determine what track should be playing
-    let desiredTrack = null;
-    let shouldMuffle = false;
-    
-    if (u.screen === "menu") {
-      desiredTrack = "menu";
-      // Don't start music immediately - let the fade transition system handle it below
-      // This prevents duplicate music tracks from playing simultaneously
-    } else if (u.screen === "levelup") {
-      // On levelup screen, keep current track but muffle it
-      desiredTrack = a.currentTrack; // Keep playing current track
-      shouldMuffle = true;
-    } else if (u.screen === "running" && s) {
-      // Check if in combat: enemies present or boss active
-      const hasEnemies = s.enemies && s.enemies.length > 0 && s.enemies.some(e => e.hp > 0);
-      const hasBoss = s.boss && s.boss.active;
-      
-      if (hasEnemies || hasBoss) {
-        desiredTrack = "battle";
-        // Don't start music immediately - let the fade transition system handle it below
-        // This prevents duplicate music tracks from playing simultaneously
-      } else {
-        // No combat, but still in game - play menu music
-        desiredTrack = "menu";
-      }
-    }
-    // For "dead" or other screens, desiredTrack stays null (no music)
-
-    // Update muffled state with smooth transition
-    if (a.muffled !== shouldMuffle) {
-      a.muffled = shouldMuffle;
-      // Volume will be updated in the normal flow below
-    }
-
-    // Handle track transitions
-    // Only transition if we're actually changing tracks (not just muffling)
-    if (desiredTrack !== a.currentTrack && desiredTrack !== null) {
-      if (a.fadeTime <= 0) {
-        // Start fade transition
-        a.fadeTime = a.fadeDuration;
-      }
-      
-      a.fadeTime = Math.max(0, a.fadeTime - dt);
-      const fadeProgress = a.fadeTime / a.fadeDuration;
-      
-      if (fadeProgress <= 0) {
-        // Fade complete, switch tracks
-        if (a.currentTrack === "menu" && a.menuMusic) {
-          a.menuMusic.pause();
-        }
-        if (a.currentTrack === "battle" && a.battleMusic) {
-          a.battleMusic.pause();
-        }
-        
-        a.currentTrack = desiredTrack;
-        
-        if (desiredTrack === "menu" && a.menuMusic) {
-          a.menuMusic.currentTime = 0;
-          // Resume audio context if needed
-          if (a.ctx && a.ctx.state === "suspended") {
-            a.ctx.resume().catch(() => {});
-          }
-          a.menuMusic.play().catch(() => {});
-        } else if (desiredTrack === "battle" && a.battleMusic) {
-          a.battleMusic.currentTime = 0;
-          // Resume audio context if needed
-          if (a.ctx && a.ctx.state === "suspended") {
-            a.ctx.resume().catch(() => {});
-          }
-          a.battleMusic.play().catch(() => {});
-        }
-        // Update volume after track change
-        updateMusicVolume();
-      } else {
-        // Fade in progress
-        const u = uiRef.current;
-        const isMuted = u ? u.muted : a.muted;
-        const musicVolume = u ? (u.musicVolume !== undefined ? u.musicVolume : 0.5) : 0.5;
-        const baseVolume = a.musicOn && !isMuted ? musicVolume : 0;
-        const targetVolume = a.muffled ? baseVolume * a.muffledVolume : baseVolume;
-        const fadeOutVol = targetVolume * fadeProgress;
-        const fadeInVol = desiredTrack ? targetVolume * (1 - fadeProgress) : 0;
-        
-        if (a.currentTrack === "menu" && a.menuMusic) {
-          a.menuMusic.volume = fadeOutVol;
-        }
-        if (a.currentTrack === "battle" && a.battleMusic) {
-          a.battleMusic.volume = fadeOutVol;
-        }
-        
-        if (desiredTrack === "menu" && a.menuMusic) {
-          if (a.menuMusic.paused) {
-            a.menuMusic.currentTime = 0;
-            // Resume audio context if needed
-            if (a.ctx && a.ctx.state === "suspended") {
-              a.ctx.resume().catch(() => {});
-            }
-            a.menuMusic.play().catch(() => {});
-          }
-          a.menuMusic.volume = fadeInVol;
-        } else if (desiredTrack === "battle" && a.battleMusic) {
-          if (a.battleMusic.paused) {
-            a.battleMusic.currentTime = 0;
-            // Resume audio context if needed
-            if (a.ctx && a.ctx.state === "suspended") {
-              a.ctx.resume().catch(() => {});
-            }
-            a.battleMusic.play().catch(() => {});
-          }
-          a.battleMusic.volume = fadeInVol;
-        }
-      }
-    } else if (desiredTrack === null && a.currentTrack !== null) {
-      // Fading out to silence (e.g., dead screen)
-      if (a.fadeTime <= 0) {
-        a.fadeTime = a.fadeDuration;
-      }
-      a.fadeTime = Math.max(0, a.fadeTime - dt);
-      const fadeProgress = a.fadeTime / a.fadeDuration;
-      const u = uiRef.current;
-      const isMuted = u ? u.muted : a.muted;
-      const musicVolume = u ? (u.musicVolume !== undefined ? u.musicVolume : 0.5) : 0.5;
-      const baseVolume = a.musicOn && !isMuted ? musicVolume : 0;
-      const fadeOutVol = baseVolume * fadeProgress;
-      
-      if (a.currentTrack === "menu" && a.menuMusic) {
-        a.menuMusic.volume = fadeOutVol;
-        if (fadeProgress <= 0) {
-          a.menuMusic.pause();
-          a.currentTrack = null;
-        }
-      }
-      if (a.currentTrack === "battle" && a.battleMusic) {
-        a.battleMusic.volume = fadeOutVol;
-        if (fadeProgress <= 0) {
-          a.battleMusic.pause();
-          a.currentTrack = null;
-        }
-      }
-    } else {
-      // Same track (or levelup keeping current track), just update volume (handles muffled state changes)
-      updateMusicVolume();
-    }
+    updateMusicFn(audioRef, uiRef, stateRef, dt, ensureAudio, updateMusicVolume);
   }
 
-  function playBeep({ type = "sine", f0 = 440, f1 = 440, dur = 0.08, gain = 0.2, pan = 0, to = "sfx" }) {
-    const a = audioRef.current;
-    if (!a.started || a.muted) return;
-    if (to === "sfx" && !a.sfxOn) return;
-    if (to === "music" && !a.musicOn) return;
-
-    const ctx = a.ctx;
-    if (!ctx) return;
-
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    const p = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
-
-    osc.type = type;
-    osc.frequency.setValueAtTime(f0, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(Math.max(40, f1), ctx.currentTime + Math.max(0.01, dur));
-
-    g.gain.setValueAtTime(0.0001, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), ctx.currentTime + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
-
-    const dst = to === "music" ? a.musicGain : a.sfxGain;
-
-    if (p) {
-      p.pan.setValueAtTime(clamp(pan, -1, 1), ctx.currentTime);
-      osc.connect(g);
-      g.connect(p);
-      p.connect(dst);
-    } else {
-      osc.connect(g);
-      g.connect(dst);
-    }
-
-    osc.start();
-    osc.stop(ctx.currentTime + dur + 0.02);
+  function playBeep(params) {
+    playBeepFn(audioRef, params);
   }
 
   function sfxShoot(xNorm = 0, variant = 0) {
-    const variants = [
-      { type: "triangle", f0: 900, f1: 520, dur: 0.045 }, // Default/revolver
-      { type: "square", f0: 750, f1: 400, dur: 0.05 }, // Poison (lower, wetter)
-      { type: "sawtooth", f0: 1100, f1: 600, dur: 0.04 }, // Freeze (higher, sharper)
-      { type: "sawtooth", f0: 600, f1: 300, dur: 0.08 }, // Fire (lower, longer, whoosh)
-      { type: "square", f0: 850, f1: 480, dur: 0.04 }, // Bone
-    ];
-    const v = variants[variant % variants.length];
-    playBeep({ ...v, gain: variant === 3 ? 0.12 : 0.1, pan: xNorm });
+    sfxShootFn(audioRef, xNorm, variant);
   }
+
   function sfxHit(xNorm = 0, variant = 0) {
-    const variants = [
-      { type: "square", f0: 240, f1: 120, dur: 0.06 },
-      { type: "sawtooth", f0: 220, f1: 100, dur: 0.055 },
-      { type: "square", f0: 260, f1: 140, dur: 0.065 },
-    ];
-    const v = variants[variant % variants.length];
-    playBeep({ ...v, gain: 0.13, pan: xNorm });
+    sfxHitFn(audioRef, xNorm, variant);
   }
+
   function sfxKill(xNorm = 0) {
-    playBeep({ type: "sawtooth", f0: 520, f1: 160, dur: 0.07, gain: 0.13, pan: xNorm });
-    // Add a satisfying pop
-    playBeep({ type: "sine", f0: 200, f1: 80, dur: 0.08, gain: 0.08, pan: xNorm });
+    sfxKillFn(audioRef, xNorm);
   }
+
   function sfxCoin(xNorm = 0) {
-    playBeep({ type: "sine", f0: 860, f1: 1200, dur: 0.06, gain: 0.11, pan: xNorm });
-    // Add sparkle
-    playBeep({ type: "triangle", f0: 1200, f1: 1400, dur: 0.04, gain: 0.06, pan: xNorm });
+    sfxCoinFn(audioRef, xNorm);
   }
+
   function sfxCrit(xNorm = 0) {
-    playBeep({ type: "sine", f0: 600, f1: 800, dur: 0.1, gain: 0.15, pan: xNorm });
-    playBeep({ type: "triangle", f0: 1000, f1: 1200, dur: 0.08, gain: 0.1, pan: xNorm });
+    sfxCritFn(audioRef, xNorm);
   }
+
   function sfxLevelUp() {
-    playBeep({ type: "sine", f0: 400, f1: 800, dur: 0.2, gain: 0.18, pan: 0 });
-    playBeep({ type: "sine", f0: 600, f1: 1000, dur: 0.18, gain: 0.15, pan: 0 });
+    sfxLevelUpFn(audioRef);
   }
+
   function sfxLevel() {
-    playBeep({ type: "triangle", f0: 520, f1: 1040, dur: 0.18, gain: 0.16, pan: 0 });
+    sfxLevelFn(audioRef);
   }
+
   function sfxBoss() {
-    playBeep({ type: "square", f0: 140, f1: 90, dur: 0.22, gain: 0.2, pan: 0 });
+    sfxBossFn(audioRef);
   }
+
   function sfxGameOver() {
-    playBeep({ type: "sawtooth", f0: 220, f1: 80, dur: 0.35, gain: 0.22, pan: 0 });
+    sfxGameOverFn(audioRef);
   }
+
   function sfxInteract() {
-    playBeep({ type: "sine", f0: 740, f1: 980, dur: 0.08, gain: 0.12, pan: 0 });
+    sfxInteractFn(audioRef);
   }
 
   function tickMusic(dt, waveIntensity) {
-    const a = audioRef.current;
-    if (!a.started || a.muted || !a.musicOn) return;
-
-    a.nextNoteT -= dt;
-    if (a.nextNoteT > 0) return;
-
-    const scale = [0, 2, 3, 5, 7, 10];
-    const root = 196;
-
-    const step = a.noteStep % 16;
-    const deg = scale[[0, 2, 4, 2, 1, 3, 5, 3][Math.floor(step / 2) % 8]];
-    const octave = step % 4 === 0 ? 1 : 0;
-    const f = root * Math.pow(2, (deg + 12 * octave) / 12);
-
-    const density = clamp(0.45 + waveIntensity * 0.22, 0.45, 0.82);
-
-    playBeep({ type: "triangle", f0: f, f1: f * 0.998, dur: 0.11, gain: 0.08 * density, pan: -0.15, to: "music" });
-    if (step % 4 === 2) {
-      playBeep({ type: "sine", f0: f * 2, f1: f * 2, dur: 0.06, gain: 0.045 * density, pan: 0.12, to: "music" });
-    }
-
-    a.noteStep += 1;
-    a.nextNoteT = 0.14;
+    tickMusicFn(audioRef, dt, waveIntensity, playBeep, clamp);
   }
 
   const content = useMemo(() => {
