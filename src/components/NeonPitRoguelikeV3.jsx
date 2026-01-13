@@ -26,9 +26,7 @@ import { ENEMY_BASE_STATS, getEnemyTierWeights, ELITE_CONFIG, getRandomEliteAbil
 import { createPlayerWithCharacter } from "../data/characterData.js";
 import menuMusicUrl from "../audio/music/Menu.mp3";
 import battleMusicUrl from "../audio/music/Battle.mp3";
-import { ensureAudio as ensureAudioFn, applyAudioToggles as applyAudioTogglesFn, updateMusicVolume as updateMusicVolumeFn } from "../audio/AudioManager.js";
-import { updateMusic as updateMusicFn, tickMusic as tickMusicFn } from "../audio/MusicController.js";
-import { playBeep as playBeepFn, sfxShoot as sfxShootFn, sfxHit as sfxHitFn, sfxKill as sfxKillFn, sfxCoin as sfxCoinFn, sfxCrit as sfxCritFn, sfxLevelUp as sfxLevelUpFn, sfxLevel as sfxLevelFn, sfxBoss as sfxBossFn, sfxGameOver as sfxGameOverFn, sfxInteract as sfxInteractFn } from "../audio/SoundEffects.js";
+import { createAudioContext } from "../audio/AudioContext.js";
 import { pushCombatText as pushCombatTextFn } from "../game/effects/CombatText.js";
 import { acquireTarget as acquireTargetFn } from "../game/systems/TargetingSystem.js";
 import { makePlayer as makePlayerFn } from "../game/player/PlayerFactory.js";
@@ -85,6 +83,7 @@ import { ISO_MODE } from "../data/constants.js";
 import { worldToIso, isoToWorld, getIsoDepth, transformInputForIsometric, drawIsometricCube, drawEntityAsCube, drawIsometricRectangle } from "../rendering/IsometricRenderer.js";
 import { drawWorld } from "../rendering/WorldRenderer.js";
 import { drawHud, drawOverlay } from "../rendering/HudRenderer.js";
+import { renderFrame, syncUIState, updateUITimers, handlePlayerDeath, shouldUpdateGame, checkLevelupState } from "../rendering/RenderOrchestrator.js";
 import { BossController, ConeAttackAbility, LineDashAbility, RingPulseAbility, TeleportAbility, ChargeAbility, MultiShotAbility, BOSS_ABILITY_STATE, DANGER_ZONE_TYPE } from "../game/systems/BossAbilitySystem.js";
 
 
@@ -201,70 +200,14 @@ export default function NeonPitRoguelikeV3() {
 
   const stateRef = useRef(null);
 
-  // Audio system wrappers - delegate to audio modules
-  function ensureAudio() {
-    ensureAudioFn(audioRef, uiRef, menuMusicUrl, battleMusicUrl, applyAudioToggles);
-  }
+  // Audio system - create context object with all audio functions
+  const audio = useMemo(() => {
+    return createAudioContext(audioRef, uiRef, stateRef, menuMusicUrl, battleMusicUrl, clamp);
+  }, []);
 
-  function applyAudioToggles(nextUi) {
-    applyAudioTogglesFn(audioRef, nextUi, updateMusicVolume);
-  }
-
-  function updateMusicVolume() {
-    updateMusicVolumeFn(audioRef, uiRef);
-  }
-
-  function updateMusic(dt) {
-    updateMusicFn(audioRef, uiRef, stateRef, dt, ensureAudio, updateMusicVolume);
-  }
-
-  function playBeep(params) {
-    playBeepFn(audioRef, params);
-  }
-
-  function sfxShoot(xNorm = 0, variant = 0) {
-    sfxShootFn(audioRef, xNorm, variant);
-  }
-
-  function sfxHit(xNorm = 0, variant = 0) {
-    sfxHitFn(audioRef, xNorm, variant);
-  }
-
-  function sfxKill(xNorm = 0) {
-    sfxKillFn(audioRef, xNorm);
-  }
-
-  function sfxCoin(xNorm = 0) {
-    sfxCoinFn(audioRef, xNorm);
-  }
-
-  function sfxCrit(xNorm = 0) {
-    sfxCritFn(audioRef, xNorm);
-  }
-
-  function sfxLevelUp() {
-    sfxLevelUpFn(audioRef);
-  }
-
-  function sfxLevel() {
-    sfxLevelFn(audioRef);
-  }
-
-  function sfxBoss() {
-    sfxBossFn(audioRef);
-  }
-
-  function sfxGameOver() {
-    sfxGameOverFn(audioRef);
-  }
-
-  function sfxInteract() {
-    sfxInteractFn(audioRef);
-  }
-
-  function tickMusic(dt, waveIntensity) {
-    tickMusicFn(audioRef, dt, waveIntensity, playBeep, clamp);
-  }
+  // Audio function aliases for backward compatibility
+  const { ensureAudio, applyAudioToggles, updateMusicVolume, updateMusic, playBeep, tickMusic,
+          sfxShoot, sfxHit, sfxKill, sfxCoin, sfxCrit, sfxLevelUp, sfxLevel, sfxBoss, sfxGameOver, sfxInteract } = audio;
 
   const content = useMemo(() => {
     return createGameContent(
@@ -643,38 +586,8 @@ export default function NeonPitRoguelikeV3() {
         // Clear and setup canvas
         ctx.clearRect(0, 0, w, h);
         
-        // CRITICAL RENDERING STACK FIX: Draw in exact order
-        if (s && u.screen === 'running' && u.pauseMenu) {
-          // 1. Draw game world (background)
-          drawWorld(s, ctx, isoScaleRef.current);
-          drawHud(s, ctx, isoScaleRef.current, content);
-          
-          // 2. Draw semi-transparent overlay
-          ctx.fillStyle = "rgba(0,0,0,0.85)";
-          ctx.fillRect(0, 0, w, h);
-          
-          // 3. Draw pause menu cards/UI in SCREEN COORDINATES
-          drawOverlay(s, ctx, u, content, isoScaleRef.current, s);
-        } else if (s && u.screen === 'levelup') {
-          // LEVELUP SCREEN FIX: Draw world, overlay, then cards
-          // 1. Draw game world (background)
-          drawWorld(s, ctx, isoScaleRef.current);
-          drawHud(s, ctx, isoScaleRef.current, content);
-          
-          // 2. Draw semi-transparent overlay
-          ctx.fillStyle = "rgba(0,0,0,0.85)";
-          ctx.fillRect(0, 0, w, h);
-          
-          // 3. IMMEDIATELY draw upgrade cards in SCREEN COORDINATES (w/2, h/2)
-          drawOverlay(s, ctx, u, content, isoScaleRef.current, s);
-        } else if (!s || u.screen === 'menu' || u.screen === 'dead') {
-          // Menu/dead screen - dark background then overlay
-          ctx.fillStyle = "#06070c";
-          ctx.fillRect(0, 0, w, h);
-          
-          const overlayState = s || { arena: { w, h }, player: { coins: 0 } };
-          drawOverlay(overlayState, ctx, u, content, isoScaleRef.current, overlayState);
-        }
+        // Render non-running states (pause, levelup, menu, dead)
+        renderFrame(s, ctx, u, content, isoScaleRef.current, w, h);
         
         rafRef.current = requestAnimationFrame(step);
         return;
@@ -687,20 +600,11 @@ export default function NeonPitRoguelikeV3() {
       if (dt > 0.1) dt = 0.1; // Prevent huge jumps after lag
 
       if (s) {
-        // FIX CHEST FREEZE: Safety check - if levelup screen but no upgradeCards, trigger upgrade sequence
-        if (u.screen === "levelup") {
-          const hasUpgradeCards = (s.upgradeCards && s.upgradeCards.length > 0) || (u.levelChoices && u.levelChoices.length > 0);
-          if (!hasUpgradeCards) {
-            console.warn("Levelup screen with no upgradeCards - triggering upgrade sequence");
-            triggerUpgradeSequence(s, content);
-          }
-        }
+        // Safety check: fix levelup screen freeze
+        checkLevelupState(s, u, triggerUpgradeSequence, content);
         
-        // Only update game logic when actually running (not paused, not on levelup/dead/menu screens, not frozen)
-        // This freezes the game world and camera when upgrade menu is open or fanfare is playing
-        const hasUpgradeCards = u.levelChoices && u.levelChoices.length > 0;
-        const fanfareActive = (u.levelUpFanfareT && u.levelUpFanfareT > 0) || (u.chestOpenFanfareT && u.chestOpenFanfareT > 0);
-        if (u.screen === "running" && s.running && !u.pauseMenu && s.freezeMode === null && !hasUpgradeCards && !fanfareActive) {
+        // Only update game logic when actually running
+        if (shouldUpdateGame(s, u)) {
           // Always update hitStopT, but only update game logic when hitStopT is 0
           if (s.hitStopT > 0) {
             s.hitStopT = Math.max(0, s.hitStopT - dt);
@@ -710,59 +614,24 @@ export default function NeonPitRoguelikeV3() {
               update(s, dt);
             } catch (error) {
               console.error("Update error:", error);
-              // Prevent freeze by resetting state
               s.running = false;
             }
           }
         }
 
-        drawWorld(s, ctx, isoScaleRef.current);
-        drawHud(s, ctx, isoScaleRef.current, content);
-
-        const u2 = uiRef.current;
-        if (u2.screen === "running" && !u2.pauseMenu) {
-          u2.score = s.score;
-          u2.level = s.level;
-          u2.xp = s.xp;
-          u2.xpNeed = s.xpNeed;
-          u2.coins = s.player.coins;
-          u2.timer = s.stageLeft;
-        }
+        // Sync UI state from game state
+        syncUIState(s, uiRef);
         
-        // Update UI timers (fanfare animations) - must happen every frame
-        if (u2.levelUpFanfareT > 0) {
-          u2.levelUpFanfareT = Math.max(0, u2.levelUpFanfareT - dt);
-        }
-        if (u2.chestOpenFanfareT > 0) {
-          u2.chestOpenFanfareT = Math.max(0, u2.chestOpenFanfareT - dt);
-        }
+        // Update UI animation timers
+        updateUITimers(uiRef, dt);
 
-        if (s.player.hp <= 0 && uiRef.current.screen !== "dead") {
-          sfxGameOver();
-          const best = safeBest();
-          const score = s.score;
-          const nextBest = Math.max(best, score);
-          try {
-            localStorage.setItem("neon_pit_best", String(nextBest));
-          } catch {
-            void 0;
-          }
-          const reason = s.player.lastDamage?.src ? `Killed by ${s.player.lastDamage.src}` : "";
-          const nextUi = { ...uiRef.current, screen: "dead", score, best: nextBest, deathReason: reason, levelChoices: [], showStats: false };
-          uiRef.current = nextUi;
-          setUi(nextUi);
-        }
+        // Handle player death
+        handlePlayerDeath(s, uiRef, setUi, sfxGameOver, safeBest);
 
-        drawOverlay(s, ctx, uiRef.current, content, isoScaleRef.current, s);
+        // Render game
+        renderFrame(s, ctx, u, content, isoScaleRef.current, w, h);
       } else {
-        const fakeS = {
-          arena: { w, h },
-          player: { coins: 0 },
-        };
-        ctx.clearRect(0, 0, w, h);
-        ctx.fillStyle = "#06070c";
-        ctx.fillRect(0, 0, w, h);
-        drawOverlay(fakeS, ctx, uiRef.current, content, isoScaleRef.current, fakeS);
+        renderFrame(null, ctx, u, content, isoScaleRef.current, w, h);
       }
 
       rafRef.current = requestAnimationFrame(step);
