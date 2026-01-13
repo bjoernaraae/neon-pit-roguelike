@@ -21,15 +21,15 @@ export function fireWeapon(s, acquireTargetFn, shootBulletFn, pushCombatTextFn, 
   const p = s.player;
   if (!p.weapons || p.weapons.length === 0) return;
 
-  // Check if we have Flamewalker (aura weapons don't need targets)
-  const hasFlamewalker = p.weapons.some(w => w.id === "flamewalker" && w.weaponMode === "aura");
+  // Check if we have any aura weapons (they don't need targets or line of sight)
+  const hasAuraWeapons = p.weapons.some(w => w.weaponMode === "aura");
 
   const tgt = acquireTargetFn(s, p.x, p.y);
   // Only require target if we don't have aura weapons
-  if (!tgt && !hasFlamewalker) return;
+  if (!tgt && !hasAuraWeapons) return;
 
-  // Check line of sight before allowing player to shoot (only for non-aura weapons)
-  if (s.levelData && tgt && !hasFlamewalker && !hasLineOfSight(p.x, p.y, tgt.x, tgt.y, s.levelData, 10)) {
+  // Only check line of sight if we don't have aura weapons (aura weapons don't need it)
+  if (s.levelData && tgt && !hasAuraWeapons && !hasLineOfSight(p.x, p.y, tgt.x, tgt.y, s.levelData, 10)) {
     return; // No line of sight, can't shoot
   }
 
