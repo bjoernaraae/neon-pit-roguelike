@@ -21,11 +21,15 @@ export function fireWeapon(s, acquireTargetFn, shootBulletFn, pushCombatTextFn, 
   const p = s.player;
   if (!p.weapons || p.weapons.length === 0) return;
 
-  const tgt = acquireTargetFn(s, p.x, p.y);
-  if (!tgt) return;
+  // Check if we have Flamewalker (aura weapons don't need targets)
+  const hasFlamewalker = p.weapons.some(w => w.id === "flamewalker" && w.weaponMode === "aura");
 
-  // Check line of sight before allowing player to shoot
-  if (s.levelData && !hasLineOfSight(p.x, p.y, tgt.x, tgt.y, s.levelData, 10)) {
+  const tgt = acquireTargetFn(s, p.x, p.y);
+  // Only require target if we don't have aura weapons
+  if (!tgt && !hasFlamewalker) return;
+
+  // Check line of sight before allowing player to shoot (only for non-aura weapons)
+  if (s.levelData && tgt && !hasFlamewalker && !hasLineOfSight(p.x, p.y, tgt.x, tgt.y, s.levelData, 10)) {
     return; // No line of sight, can't shoot
   }
 
@@ -58,54 +62,70 @@ export function fireWeapon(s, acquireTargetFn, shootBulletFn, pushCombatTextFn, 
       
       if (weapon.attackT > 0) continue; // Weapon is on cooldown
 
-      // Flamewalker - spawn fire under player feet
+      // Flamewalker - spawn fire under player feet (independent of combat)
       if (weapon.id === "flamewalker" && weapon.weaponMode === "aura") {
-        // Reduced floor damage scaling from +3% to +1.5% per floor
-    const baseDmg = weapon.weaponDamage || 1;
-    const floorMult = 0.84 + 0.015 * (s.floor || 0);
-    const dmgBase = (isNaN(baseDmg) ? 1 : baseDmg) * (isNaN(floorMult) ? 1 : floorMult);
-        
-        // Apply berserker damage multiplier (based on missing HP)
-        let berserkerBonus = 1.0;
-        if (p.berserkerMult > 0 && !isNaN(p.berserkerMult)) {
-          const hpPercent = (p.hp || 0) / Math.max(1, p.maxHp || 1);
-          const missingHpPercent = 1 - hpPercent;
-          berserkerBonus = 1 + (p.berserkerMult * missingHpPercent);
-          if (isNaN(berserkerBonus)) berserkerBonus = 1.0;
+        // Initialize internal timer if not set
+        if (weapon.flamewalkerTimer === undefined) {
+          weapon.flamewalkerTimer = 0;
         }
-        
-        // Apply speed demon damage multiplier (based on movement speed)
-        let speedBonus = 1.0;
-        if (p.speedDamageMult > 0 && !isNaN(p.speedDamageMult)) {
-          const currentSpeed = (p.speedBase || 0) + (p.speedBonus || 0);
-          speedBonus = 1 + (p.speedDamageMult * (currentSpeed / 100));
-          if (isNaN(speedBonus)) speedBonus = 1.0;
+
+        // Update timer (runs every frame)
+        weapon.flamewalkerTimer -= s.dt || 0.016;
+
+        // Spawn fire when timer reaches 0
+        if (weapon.flamewalkerTimer <= 0) {
+          // Reset timer to attack cooldown
+          weapon.flamewalkerTimer = weapon.attackCooldown;
+
+          // Reduced floor damage scaling from +3% to +1.5% per floor
+          const baseDmg = weapon.weaponDamage || 1;
+          const floorMult = 0.84 + 0.015 * (s.floor || 0);
+          const dmgBase = (isNaN(baseDmg) ? 1 : baseDmg) * (isNaN(floorMult) ? 1 : floorMult);
+
+          // Apply berserker damage multiplier (based on missing HP)
+          let berserkerBonus = 1.0;
+          if (p.berserkerMult > 0 && !isNaN(p.berserkerMult)) {
+            const hpPercent = (p.hp || 0) / Math.max(1, p.maxHp || 1);
+            const missingHpPercent = 1 - hpPercent;
+            berserkerBonus = 1 + (p.berserkerMult * missingHpPercent);
+            if (isNaN(berserkerBonus)) berserkerBonus = 1.0;
+          }
+
+          // Apply speed demon damage multiplier (based on movement speed)
+          let speedBonus = 1.0;
+          if (p.speedDamageMult > 0 && !isNaN(p.speedDamageMult)) {
+            const currentSpeed = (p.speedBase || 0) + (p.speedBonus || 0);
+            speedBonus = 1 + (p.speedDamageMult * (currentSpeed / 100));
+            if (isNaN(speedBonus)) speedBonus = 1.0;
+          }
+
+          const dmgWithBonuses = dmgBase * berserkerBonus * speedBonus;
+          if (isNaN(dmgWithBonuses) || dmgWithBonuses <= 0) {
+            continue; // Skip this weapon if damage is invalid
+          }
+          const crit = Math.random() < clamp(p.critChance || 0, 0, 0.8);
+          const dmg = crit ? dmgWithBonuses * 1.6 : dmgWithBonuses;
+          if (isNaN(dmg) || dmg <= 0) continue;
+          const fireRadius = Math.max(45, (weapon.weaponMeleeR || 50) * p.sizeMult);
+
+          // Spawn burning area under player
+          s.burningAreas.push({
+            x: p.x,
+            y: p.y,
+            t: 0,
+            life: 4.0, // Duration in seconds
+            r: fireRadius,
+            dmg: dmg * 0.18, // Damage per tick
+            tickRate: 0.4, // Damage every 0.4 seconds
+            lastTick: 0,
+          });
+
+          // Visual effect
+          addParticle(s, p.x, p.y, 12, 20, { size: 3, speed: 0.8 });
         }
-        
-        const dmgWithBonuses = dmgBase * berserkerBonus * speedBonus;
-        if (isNaN(dmgWithBonuses) || dmgWithBonuses <= 0) {
-          continue; // Skip this weapon if damage is invalid
-        }
-        const crit = Math.random() < clamp(p.critChance || 0, 0, 0.8);
-        const dmg = crit ? dmgWithBonuses * 1.6 : dmgWithBonuses;
-        if (isNaN(dmg) || dmg <= 0) continue;
-        const fireRadius = Math.max(45, (weapon.weaponMeleeR || 50) * p.sizeMult);
-        
-        // Spawn burning area under player
-        s.burningAreas.push({
-          x: p.x,
-          y: p.y,
-          t: 0,
-          life: 4.0, // Duration in seconds
-          r: fireRadius,
-          dmg: dmg * 0.18, // Damage per tick
-          tickRate: 0.4, // Damage every 0.4 seconds
-          lastTick: 0,
-        });
-        
-        // Visual effect
-        addParticle(s, p.x, p.y, 12, 20, { size: 3, speed: 0.8 });
-        weapon.attackT = weapon.attackCooldown;
+
+        // Don't use normal weapon cooldown - Flamewalker manages its own timing
+        weapon.attackT = 0; // Keep cooldown at 0 so it doesn't block other weapons
         continue;
       }
 

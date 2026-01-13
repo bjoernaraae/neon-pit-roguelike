@@ -271,9 +271,9 @@ export function createWeapons(makeIconDraw) {
       id: "flamewalker",
       name: "Flamewalker",
       type: TYPE.WEAPON,
-      base: {
-        attackCooldown: 0.85, // Slower attack speed - spawns fire periodically
-        weaponDamage: 6,
+  base: {
+    attackCooldown: 1.5, // Aura effect - spawns fire every 1.5 seconds
+    weaponDamage: 6,
         projectiles: 0,
         pierce: 0,
         spread: 0,
