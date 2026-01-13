@@ -2,6 +2,7 @@
  * Game-specific mathematical calculations and utilities
  */
 
+import { clamp } from "./math.js";
 import { deepClone } from "./data.js";
 
 /**
@@ -11,6 +12,42 @@ import { deepClone } from "./data.js";
  */
 export function xpToNext(level) {
   return Math.round(16 + level * 8 + Math.pow(level, 1.35) * 4);
+}
+
+/**
+ * Calculate chest purchase cost (exponential scaling with floor multiplier)
+ * @param {number} chestOpens - Number of chests opened so far
+ * @param {number} floor - Current floor number
+ * @returns {number} Cost in coins
+ */
+export function chestCost(chestOpens, floor) {
+  const base = 20; // Expensive starting cost
+  // Truly exponential increase: cost = base * (multiplier ^ chestOpens)
+  const multiplier = 1.8; // Each chest costs 1.8x the previous (steep)
+  const floorMultiplier = 1 + (floor - 1) * 0.2; // +20% per floor
+  const exponentialCost = base * Math.pow(multiplier, chestOpens) * floorMultiplier;
+  return Math.round(exponentialCost);
+}
+
+/**
+ * Calculate damage after armor reduction
+ * @param {number} amount - Base damage amount
+ * @param {number} armor - Armor value (0-0.8, representing 0-80% reduction)
+ * @returns {number} Damage after armor reduction
+ */
+export function mitigateDamage(amount, armor) {
+  const a = clamp(armor, 0, 0.8);
+  return amount * (1 - a);
+}
+
+/**
+ * Roll for evasion based on evasion chance
+ * @param {number} evasion - Evasion chance (0-0.75, representing 0-75% chance)
+ * @returns {boolean} True if attack was evaded
+ */
+export function rollEvasion(evasion) {
+  const e = clamp(evasion, 0, 0.75);
+  return Math.random() < e;
 }
 
 /**
