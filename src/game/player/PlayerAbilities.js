@@ -1,6 +1,7 @@
-import { clamp, transformInputForIsometric } from "../../utils/math.js";
+import { clamp } from "../../utils/math.js";
 import { bumpShake, addParticle, addExplosion } from "../effects/VisualEffects.js";
 import { ISO_MODE } from "../../data/constants.js";
+import { transformInputForIsometric } from "../../rendering/IsometricRenderer.js";
 
 /**
  * Use player's active ability (blink, quickdraw, slam, flamewalker)
