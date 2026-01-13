@@ -53,6 +53,7 @@ import { newRun as newRunFn } from "../game/GameInitializer.js";
 import { processEnemyDeaths } from "../game/enemies/EnemyDeathSystem.js";
 import { updateBossPortalSpawning, updateDifficultyScaling, updateChestSpawning } from "../game/progression/GameProgressionSystem.js";
 import { updateHealthRegeneration, updateShieldRegeneration } from "../game/player/PlayerRegenerationSystem.js";
+import { updateFrameState } from "../game/FrameUpdateSystem.js";
 
 // Aliases for backward compatibility
 const getVisualCubeRadius = getVisualRadius;
@@ -399,37 +400,8 @@ export default function NeonPitRoguelikeV3() {
     const p = s.player;
     const { w, h, padding } = s.arena;
     
-    // Initialize and update camera
-    initializeCamera(s, w, h);
-    updateCamera(s, dt, w, h, uiRef);
-
-    s.t += dt;
-
-    const intensity = clamp(1 - s.stageLeft / s.stageDur, 0, 1);
-    tickMusic(dt, intensity);
-    updateMusic(dt); // CRITICAL: Call updateMusic to manage menu/battle music
-    
-    // Generate Flow Field once per frame (Dijkstra Map from player position)
-    // RESET STATE: Ensure old pathfindingGrid is completely overwritten (already handled by level generation)
-    if (s.levelData && s.levelData.pathfindingGrid) {
-      try {
-        s.flowFieldData = generateFlowField(
-          p.x,
-          p.y,
-          s.levelData.pathfindingGrid,
-          s.levelData.pathfindingGridSize || 10
-        );
-      } catch (error) {
-        // Flow field generation failed - log error and set to null
-        console.error('Flow field generation error:', error);
-        s.flowFieldData = null;
-      }
-    } else {
-      s.flowFieldData = null;
-    }
-
-    if (s.shakeT > 0) s.shakeT = Math.max(0, s.shakeT - dt);
-    // hitStopT is now handled in the render loop to prevent freeze
+    // Update per-frame state (camera, time, music, flow field)
+    const intensity = updateFrameState(s, dt, uiRef, tickMusic, updateMusic);
 
     // Update player physics and buff timers
     updateBuffTimers(p, dt);
