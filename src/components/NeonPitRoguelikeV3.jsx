@@ -483,25 +483,8 @@ export default function NeonPitRoguelikeV3() {
     
     if (u.screen === "menu") {
       desiredTrack = "menu";
-      // Switch to menu music if not already playing
-      if (a.currentTrack !== "menu") {
-        // Pause battle music
-        if (a.battleMusic && !a.battleMusic.paused) {
-          a.battleMusic.pause();
-        }
-        // Start menu music
-        if (a.menuMusic) {
-          a.menuMusic.currentTime = 0;
-          if (a.ctx && a.ctx.state === "suspended") {
-            a.ctx.resume().catch(() => {});
-          }
-          a.menuMusic.play().catch(() => {});
-          a.currentTrack = "menu";
-        }
-      } else if (a.menuMusic && a.menuMusic.paused) {
-        // Resume menu music if paused
-        a.menuMusic.play().catch(() => {});
-      }
+      // Don't start music immediately - let the fade transition system handle it below
+      // This prevents duplicate music tracks from playing simultaneously
     } else if (u.screen === "levelup") {
       // On levelup screen, keep current track but muffle it
       desiredTrack = a.currentTrack; // Keep playing current track
@@ -513,14 +496,8 @@ export default function NeonPitRoguelikeV3() {
       
       if (hasEnemies || hasBoss) {
         desiredTrack = "battle";
-        // Ensure battle music starts when in combat
-        if (a.currentTrack !== "battle" && a.battleMusic && a.battleMusic.paused) {
-          a.battleMusic.currentTime = 0;
-          if (a.ctx && a.ctx.state === "suspended") {
-            a.ctx.resume().catch(() => {});
-          }
-          a.battleMusic.play().catch(() => {});
-        }
+        // Don't start music immediately - let the fade transition system handle it below
+        // This prevents duplicate music tracks from playing simultaneously
       } else {
         // No combat, but still in game - play menu music
         desiredTrack = "menu";
