@@ -147,24 +147,30 @@ export function handleAdminAction(s, action, INTERACT, startBossFn, spawnInterac
       break;
     case "giveAllWeapons":
       for (const w of content.weapons) {
+        // Always apply weapon to level it up (allows stacking)
+        applyWeaponFn(p, w, RARITY.LEGENDARY, false);
+        // Only add to collected list if not already there
         if (!p.collectedWeapons.find(x => x.id === w.id)) {
-          applyWeaponFn(p, w, RARITY.LEGENDARY, false);
           p.collectedWeapons.push({ ...w, rarity: RARITY.LEGENDARY });
         }
       }
       break;
     case "giveAllTomes":
       for (const t of content.tomes) {
+        // Always apply tome to level it up (allows stacking)
+        applyWeaponFn(p, t, RARITY.LEGENDARY, false);
+        // Only add to collected list if not already there
         if (!p.collectedTomes.find(x => x.id === t.id)) {
-          applyWeaponFn(p, t, RARITY.LEGENDARY, false);
           p.collectedTomes.push({ ...t, rarity: RARITY.LEGENDARY });
         }
       }
       break;
     case "giveAllItems":
       for (const it of content.items) {
+        // Always apply item to level it up (allows stacking)
+        applyWeaponFn(p, it, RARITY.LEGENDARY, false);
+        // Only add to collected list if not already there
         if (!p.collectedItems.find(x => x.id === it.id)) {
-          applyWeaponFn(p, it, RARITY.LEGENDARY, false);
           p.collectedItems.push({ ...it, rarity: RARITY.LEGENDARY });
         }
       }
@@ -176,23 +182,35 @@ export function handleAdminAction(s, action, INTERACT, startBossFn, spawnInterac
       if (action.startsWith("giveWeapon:")) {
         const weaponId = action.split(":")[1];
         const weapon = content.weapons.find((w) => w.id === weaponId);
-        if (weapon && !p.collectedWeapons.find((x) => x.id === weaponId)) {
+        if (weapon) {
+          // Always apply weapon to level it up (allows stacking)
           applyWeaponFn(p, weapon, RARITY.LEGENDARY, false);
-          p.collectedWeapons.push({ ...weapon, rarity: RARITY.LEGENDARY });
+          // Only add to collected list if not already there
+          if (!p.collectedWeapons.find((x) => x.id === weaponId)) {
+            p.collectedWeapons.push({ ...weapon, rarity: RARITY.LEGENDARY });
+          }
         }
       } else if (action.startsWith("giveTome:")) {
         const tomeId = action.split(":")[1];
         const tome = content.tomes.find((t) => t.id === tomeId);
-        if (tome && !p.collectedTomes.find((x) => x.id === tomeId)) {
+        if (tome) {
+          // Always apply tome to level it up (allows stacking)
           applyWeaponFn(p, tome, RARITY.LEGENDARY, false);
-          p.collectedTomes.push({ ...tome, rarity: RARITY.LEGENDARY });
+          // Only add to collected list if not already there
+          if (!p.collectedTomes.find((x) => x.id === tomeId)) {
+            p.collectedTomes.push({ ...tome, rarity: RARITY.LEGENDARY });
+          }
         }
       } else if (action.startsWith("giveItem:")) {
         const itemId = action.split(":")[1];
         const item = content.items.find((it) => it.id === itemId);
-        if (item && !p.collectedItems.find((x) => x.id === itemId)) {
+        if (item) {
+          // Always apply item to level it up (allows stacking)
           applyWeaponFn(p, item, RARITY.LEGENDARY, false);
-          p.collectedItems.push({ ...item, rarity: RARITY.LEGENDARY });
+          // Only add to collected list if not already there
+          if (!p.collectedItems.find((x) => x.id === itemId)) {
+            p.collectedItems.push({ ...item, rarity: RARITY.LEGENDARY });
+          }
         }
       } else if (action === "backToMain") {
         setUi((u) => ({ ...u, adminCategory: "main" }));
